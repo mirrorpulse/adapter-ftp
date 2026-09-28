@@ -1,0 +1,4 @@
+<Project>
+  <PropertyGroup><ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally></PropertyGroup>
+  <ItemGroup><PackageVersion Include="FluentFTP" Version="54.2.1" /></ItemGroup>
+</Project>
