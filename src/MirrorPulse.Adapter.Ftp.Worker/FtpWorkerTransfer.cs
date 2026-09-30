@@ -116,7 +116,18 @@ public sealed class FtpWorkerTransfer(AsyncFtpClient client, FtpWorkerConfigurat
     {
         if (isDirectory)
         {
-            throw new NotSupportedException("The FTP Worker does not delete directories through the mutation protocol.");
+            string directoryPath = ResolveDirectoryPath(relativePath);
+            string? currentDirectory = await GetDirectoryRevisionAsync(directoryPath, cancellationToken)
+                .ConfigureAwait(false);
+            if (currentDirectory is null) return null;
+            if (!string.Equals(currentDirectory, expectedRevision, StringComparison.Ordinal))
+            {
+                throw new FtpRevisionConflictException(expectedRevision, currentDirectory);
+            }
+
+            await client.DeleteDirectory(directoryPath, FtpListOption.Recursive, cancellationToken)
+                .ConfigureAwait(false);
+            return null;
         }
 
         string? current = await GetRevisionAsync(relativePath, cancellationToken).ConfigureAwait(false);
@@ -143,7 +154,25 @@ public sealed class FtpWorkerTransfer(AsyncFtpClient client, FtpWorkerConfigurat
     {
         if (isDirectory)
         {
-            throw new NotSupportedException("The FTP Worker does not move directories through the mutation protocol.");
+            string source = ResolveDirectoryPath(sourcePath);
+            string? currentDirectory = await GetDirectoryRevisionAsync(source, cancellationToken)
+                .ConfigureAwait(false);
+            if (!string.Equals(currentDirectory, expectedRevision, StringComparison.Ordinal))
+            {
+                throw new FtpRevisionConflictException(expectedRevision, currentDirectory);
+            }
+
+            string destination = ResolveDirectoryPath(destinationPath);
+            if (await client.GetObjectInfo(destination, true, cancellationToken).ConfigureAwait(false) is not null)
+            {
+                throw new IOException("The FTP move destination already exists.");
+            }
+
+            await client.MoveDirectory(source, destination, FtpRemoteExists.NoCheck, cancellationToken)
+                .ConfigureAwait(false);
+            return await GetDirectoryRevisionAsync(destination, cancellationToken)
+                .ConfigureAwait(false)
+                ?? throw new IOException("The moved FTP directory is missing.");
         }
 
         string? current = await GetRevisionAsync(sourcePath, cancellationToken).ConfigureAwait(false);
@@ -181,6 +210,18 @@ public sealed class FtpWorkerTransfer(AsyncFtpClient client, FtpWorkerConfigurat
         string.IsNullOrEmpty(relativePath)
             ? configuration.Endpoint.AbsolutePath.TrimEnd('/')
             : ResolvePath(relativePath);
+
+    private async Task<string?> GetDirectoryRevisionAsync(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        FtpListItem? item = await client.GetObjectInfo(path, true, cancellationToken)
+            .ConfigureAwait(false);
+        if (item is null || item.Type != FtpObjectType.Directory) return null;
+        DateTime modified = item.Modified;
+        return $"{item.Size}:{(modified == DateTime.MinValue
+            ? "unknown" : modified.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture))}";
+    }
 
     public async Task<FtpWorkerDirectoryPage> ReadDirectoryPageAsync(
         string relativePath,
