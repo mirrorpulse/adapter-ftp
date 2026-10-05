@@ -1,0 +1,4 @@
+{
+  "workerProject": "src/MirrorPulse.Adapter.Ftp.Worker/MirrorPulse.Adapter.Ftp.Worker.csproj",
+  "label": "FTP"
+}
