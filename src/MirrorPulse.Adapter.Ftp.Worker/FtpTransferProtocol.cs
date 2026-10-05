@@ -60,11 +60,12 @@ internal sealed class FtpTransferProtocol(AdapterControlChannel channel, Adapter
                     default: throw new InvalidDataException("ConditionalMutationUnavailable");
                 }
             }
-            catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException or JsonException or FormatException or FtpException or KeyNotFoundException)
+            catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException or JsonException or FormatException or FtpException or KeyNotFoundException or System.Security.Authentication.AuthenticationException)
             {
                 string[] codes = ["UnknownRoot", "RootOffline", "InvalidPath", "InvalidCursor", "InvalidPageSize", "InvalidRange",
                     "RemoteConflict", "SourceUnavailable", "DirectoryEnumerationIncomplete", "ConditionalMutationUnavailable"];
-                string code = exception is InvalidDataException && codes.Contains(exception.Message, StringComparer.Ordinal)
+                string code = exception is System.Security.Authentication.AuthenticationException ? "CertificateRejected" :
+                    exception is InvalidDataException && codes.Contains(exception.Message, StringComparer.Ordinal)
                     ? exception.Message : exception is FtpException or IOException ? "RetryableTransferFailure" : "InvalidRequest";
                 string? root = command.Payload.TryGetProperty("rootKey", out JsonElement rootValue) && rootValue.ValueKind == JsonValueKind.String ? rootValue.GetString() : null;
                 Guid? operation = command.Payload.TryGetProperty("operationId", out JsonElement operationValue) && operationValue.TryGetGuid(out Guid id) ? id : null;

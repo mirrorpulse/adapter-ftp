@@ -97,6 +97,17 @@ public sealed class FtpWorkerProtocolTests
     }
 
     [TestMethod]
+    public async Task AnUntrustedDataCertificateCannotPublishDirectoryEntriesOrContent()
+    {
+        await using var session = await FtpWorkerSession.StartAsync(FtpSecurityMode.ExplicitTls);
+        session.Left.UseDifferentDataCertificate = true;
+        AdapterControlFrame refused = await session.RequestAsync("List", new { rootKey = "left", path = "", pageSize = 512 });
+        Assert.AreEqual("OperationError", refused.MessageType);
+        Assert.AreEqual("CertificateRejected", refused.Payload.GetProperty("code").GetString());
+        Assert.AreEqual("right", Encoding.UTF8.GetString(await session.ReadRangeAsync("right", "same.txt", 5)));
+    }
+
+    [TestMethod]
     public async Task AnUntrustedTlsCertificateIsRejectedBeforePasswordAuthentication()
     {
         await using var session = await FtpWorkerSession.StartAsync(FtpSecurityMode.ExplicitTls, rejectCertificate: true);

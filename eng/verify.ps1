@@ -4,7 +4,8 @@ $ErrorActionPreference = 'Stop'
 & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'restore-adapter-sdk.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Fixed SDK verification failed.' }
 $projects = @('src/MirrorPulse.Adapter.Ftp.Worker/MirrorPulse.Adapter.Ftp.Worker.csproj',
-    'tests/MirrorPulse.Adapter.Ftp.Worker.Tests/MirrorPulse.Adapter.Ftp.Worker.Tests.csproj')
+    'tests/MirrorPulse.Adapter.Ftp.Worker.Tests/MirrorPulse.Adapter.Ftp.Worker.Tests.csproj',
+    'tools/MirrorPulse.Adapter.Ftp.Conformance/MirrorPulse.Adapter.Ftp.Conformance.csproj')
 foreach ($project in $projects) {
     & dotnet restore $project --locked-mode
     if ($LASTEXITCODE -ne 0) { throw 'Locked restore failed.' }
@@ -17,6 +18,6 @@ foreach ($project in $projects) {
 if ($LASTEXITCODE -ne 0) { throw 'Actual FTP/FTPS conformance failed.' }
 [xml]$trx = Get-Content -LiteralPath artifacts/test-results/ftp-v2.trx -Raw
 $counts = $trx.TestRun.ResultSummary.Counters
-if ($counts.total -ne 7 -or $counts.executed -ne 7 -or $counts.passed -ne 7 -or $counts.notExecuted -ne 0) {
+if ($counts.total -ne 8 -or $counts.executed -ne 8 -or $counts.passed -ne 8 -or $counts.notExecuted -ne 0) {
     throw 'All FTP/FTPS source cases must execute without skips.'
 }

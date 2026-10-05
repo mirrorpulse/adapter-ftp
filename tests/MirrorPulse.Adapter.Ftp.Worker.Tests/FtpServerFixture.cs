@@ -13,6 +13,7 @@ internal sealed class FtpServerFixture : IAsyncDisposable
 {
     private readonly TcpListener _listener;
     private readonly X509Certificate2 _certificate;
+    private readonly X509Certificate2 _dataCertificate;
     private readonly Task _server;
     private readonly FtpSecurityMode _mode;
     private readonly Dictionary<string, (byte[] Content, DateTime Modified)> _files =
@@ -27,14 +28,8 @@ internal sealed class FtpServerFixture : IAsyncDisposable
     {
         _mode = mode;
         Label = label;
-        using RSA key = RSA.Create(2048);
-        var certificateRequest = new CertificateRequest(
-            "CN=localhost", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        using X509Certificate2 generated = certificateRequest.CreateSelfSigned(
-            DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddHours(1));
-        _certificate = X509CertificateLoader.LoadPkcs12(
-            generated.Export(X509ContentType.Pfx), null,
-            X509KeyStorageFlags.UserKeySet | X509KeyStorageFlags.Exportable);
+        _certificate = CreateCertificate();
+        _dataCertificate = CreateCertificate();
         CertificateSha256 = Convert.ToHexString(SHA256.HashData(_certificate.RawData));
         _listener = new TcpListener(IPAddress.Loopback, 0);
         _listener.Start();
@@ -43,6 +38,18 @@ internal sealed class FtpServerFixture : IAsyncDisposable
             new DateTime(2026, 9, 29, 12, 0, 0, DateTimeKind.Utc));
         _files["/second.txt"] = (Encoding.UTF8.GetBytes("second-" + label), new DateTime(2026, 9, 29, 12, 0, 1, DateTimeKind.Utc));
         _server = ServeAsync();
+    }
+
+    private static X509Certificate2 CreateCertificate()
+    {
+        using RSA key = RSA.Create(2048);
+        var certificateRequest = new CertificateRequest(
+            "CN=localhost", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        using X509Certificate2 generated = certificateRequest.CreateSelfSigned(
+            DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddHours(1));
+        return X509CertificateLoader.LoadPkcs12(
+            generated.Export(X509ContentType.Pfx), null,
+            X509KeyStorageFlags.UserKeySet | X509KeyStorageFlags.Exportable);
     }
 
     public string Label { get; }
@@ -55,6 +62,7 @@ internal sealed class FtpServerFixture : IAsyncDisposable
     public bool Authenticated { get; private set; }
 
     public bool ControlChannelEncrypted { get; private set; }
+    public bool UseDifferentDataCertificate { get; set; }
 
     public bool FailNextStore { get; set; }
 
@@ -74,6 +82,7 @@ internal sealed class FtpServerFixture : IAsyncDisposable
         }
 
         _certificate.Dispose();
+        _dataCertificate.Dispose();
     }
 
     private async Task ServeAsync()
@@ -140,7 +149,7 @@ internal sealed class FtpServerFixture : IAsyncDisposable
                     await SendAsync(stream, "150 Opening data connection\r\n");
                     using (TcpClient data = await (_dataListener ?? throw new InvalidDataException()).AcceptTcpClientAsync())
                     {
-                        Stream dataStream = _protectData ? await SecureAsync(data.GetStream()) : data.GetStream();
+                        Stream dataStream = _protectData ? await SecureAsync(data.GetStream(), dataChannel: true) : data.GetStream();
                         string prefix = argument.TrimEnd('/') + "/";
                         if (ListingOverride is not null) await SendAsync(dataStream, ListingOverride);
                         else foreach (var item in _files.Where(item => item.Key.StartsWith(prefix, StringComparison.Ordinal) && !item.Key[prefix.Length..].Contains('/')))
@@ -163,7 +172,7 @@ internal sealed class FtpServerFixture : IAsyncDisposable
                     await SendAsync(stream, "150 Opening data connection\r\n");
                     using (TcpClient data = await (_dataListener ?? throw new InvalidDataException()).AcceptTcpClientAsync())
                     {
-                        Stream dataStream = _protectData ? await SecureAsync(data.GetStream()) : data.GetStream();
+                        Stream dataStream = _protectData ? await SecureAsync(data.GetStream(), dataChannel: true) : data.GetStream();
                         await dataStream.WriteAsync(retrieved.Content.AsMemory(checked((int)_restartOffset)));
                         await dataStream.FlushAsync();
                     }
@@ -176,7 +185,7 @@ internal sealed class FtpServerFixture : IAsyncDisposable
                     await SendAsync(stream, "150 Opening data connection\r\n");
                     using (TcpClient data = await (_dataListener ?? throw new InvalidDataException()).AcceptTcpClientAsync())
                     {
-                        Stream dataStream = _protectData ? await SecureAsync(data.GetStream()) : data.GetStream();
+                        Stream dataStream = _protectData ? await SecureAsync(data.GetStream(), dataChannel: true) : data.GetStream();
                         using var output = new MemoryStream();
                         await dataStream.CopyToAsync(output);
                         if (!FailNextStore)
@@ -234,10 +243,10 @@ internal sealed class FtpServerFixture : IAsyncDisposable
         }
     }
 
-    private async Task<Stream> SecureAsync(Stream input)
+    private async Task<Stream> SecureAsync(Stream input, bool dataChannel = false)
     {
         var tls = new SslStream(input, leaveInnerStreamOpen: true);
-        await tls.AuthenticateAsServerAsync(_certificate, clientCertificateRequired: false,
+        await tls.AuthenticateAsServerAsync(dataChannel && UseDifferentDataCertificate ? _dataCertificate : _certificate, clientCertificateRequired: false,
             enabledSslProtocols: SslProtocols.Tls12 | SslProtocols.Tls13,
             checkCertificateRevocation: false);
         ControlChannelEncrypted = true;

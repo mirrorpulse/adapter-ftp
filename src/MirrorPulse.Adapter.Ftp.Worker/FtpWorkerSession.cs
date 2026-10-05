@@ -76,6 +76,11 @@ public static class FtpWorkerConnection
         client.Config.DataConnectionConnectTimeout = 15000;
         client.Config.DataConnectionReadTimeout = 15000;
         client.Config.DataConnectionEncryption = configuration.SecurityMode != FtpSecurityMode.Plain;
+        if (configuration.SecurityMode != FtpSecurityMode.Plain)
+        {
+            client.Config.CustomStream = typeof(FtpTlsTransport);
+            client.Config.CustomStreamConfig = new FtpTlsPolicy(configuration.TrustedCertificateSha256);
+        }
         client.ValidateCertificate += (_, args) =>
         {
             args.Accept = args.PolicyErrors == SslPolicyErrors.None ||
@@ -103,4 +108,3 @@ public static class FtpWorkerConnection
         }
     }
 }
-
