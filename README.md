@@ -1,38 +1,50 @@
 # MirrorPulse FTP and FTPS Adapter
 
-This repository contains the independent FTP and FTPS Worker process for MirrorPulse. Each configured instance runs in its own process and communicates with the Host through a current-user Named Pipe.
+This is the official repository for the MirrorPulse FTP and FTPS Worker.
+Previously released v1 packages remain immutable and available. The development
+Worker consumes the fixed published SDK 0.2.1 and negotiates protocol v2 over a
+current-user Named Pipe. Each enabled root has its own endpoint, credentials,
+connection, addresses and cursor scope. Disabled roots request no credentials and
+open no connection. The Host owns configuration and credential storage.
 
-## Build
+## Configuration and capabilities
 
-Run `pwsh ./eng/verify.ps1` to restore and build the Worker for Windows x64 and ARM64. The reusable IPC SDK is under `src/MirrorPulse.Adapter.Sdk/`.
+Each root supplies `endpoint` (an `ftp://` URI without credentials), `username`,
+`credentialReference` and `securityMode`. `ExplicitTls` is the default;
+`ImplicitTls` is also supported. `Plain` requires explicit `allowPlaintext=true`.
+Both TLS modes encrypt the control and data connections. System certificate trust
+is checked; a configured `trustedCertificateSha256` may explicitly pin the exact
+certificate. An untrusted certificate is refused before password authentication.
+Passwords arrive only through the Host credential exchange and are not logged.
 
-## Release status
+The current v2 development boundary supports directory paging, Stat and bounded
+binary range reads. It refuses destructive or conditional mutations with
+`ConditionalMutationUnavailable`; the safe mutation policy is being completed
+before a formal v2 release. Generic FTP supplies no atomic version condition.
+Metadata revisions detect visible size/time changes but do not prove a snapshot
+against same-size changes with the same timestamp. They are never treated as CAS.
 
-The Worker implementation is under product integration. No signed production `.mpadapter` release has been published from this repository. Release packages will include both architectures, a verified file inventory, and a detached package signature.
+FluentFTP 54.2.1 supplies the mature connection, TLS, passive data transport and
+listing parsers. Raw directory input is limited to 4 MiB, 8,192 lines and 8,192
+characters per line before parsing. Unparseable entries, symbolic links and
+escaping paths are refused. Pagination is bound to root and path; it does not
+bypass the listing budget. Each content frame contains at most 1 MiB. Absolute
+paths, traversal, backslashes and control characters are rejected before any FTP
+command. Source settings are never stored by the Worker.
+
+## Verification and publication
+
+Run `pwsh ./eng/verify.ps1` for the fixed SDK check, locked restore, Release builds,
+complete formatting and actual Worker process tests against disposable FTP/FTPS
+endpoints. They exercise two authenticated sources, cursor boundaries, plaintext
+consent, stale read rejection, explicit/implicit TLS, invalid certificates and
+oversized or escaping listings. Test fixtures use no user files or live servers.
+
+The earlier staged release workflow is retained until the v2 native package and
+production Host controller are connected. Its fixed v1 product gate must not be
+bypassed to publish a v2 candidate. Private runtimes, dual-architecture signed
+conformance and the unified preview/stable controller remain pending development.
+Production signing keys are supplied only in the protected signing job; no
+private key file is read or exported. Existing releases and tags are not changed.
 
 Licensed under Apache-2.0. See [LICENSE](LICENSE).
-
-## Release governance
-
-The release scripts and pinned staged workflow follow the template at commit
-544c594. Version/tag inputs enter scripts through environment data and are
-validated before paths or builds are created. Build has no signing secrets;
-signing uses the `adapter-signing` environment; publishing alone has write
-permission and uses `adapter-release`. Manual dispatch defaults to a verified
-signed artifact without publishing a tag or Release.
-
-Run `pwsh ./eng/verify-release.ps1` for hostile input rejection and a dual-RID
-package signed with a disposable in-memory key. Production keys are read only
-from signing-step environment variables. No private key file is read or exported.
-The embedded inventory is verified before upload; MirrorPulse independently
-verifies publisher trust at installation.
-
-The repository owner must configure environment reviewers, trusted branch/tag
-rules and signing-secret scope. YAML environment names alone do not enforce those
-protections. Existing organization secrets remain compatible until that migration.
-The current framework-dependent v1 runtime is retained by this release change.
-
-The release workflow also verifies the newly signed candidate using MirrorPulse
-16c6742 and real Local/WebDAV/SMB/FTP/SFTP Host/Worker fixtures on a disposable
-runner. It records both source commits and the candidate package hash. Publishing
-requires that protocol gate; signed dry-run assets remain unpublished.
