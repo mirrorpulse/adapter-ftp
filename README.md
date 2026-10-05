@@ -40,11 +40,27 @@ endpoints. They exercise two authenticated sources, cursor boundaries, plaintext
 consent, stale read rejection, explicit/implicit TLS, invalid certificates and
 oversized or escaping listings. Test fixtures use no user files or live servers.
 
-The earlier staged release workflow is retained until the v2 native package and
-production Host controller are connected. Its fixed v1 product gate must not be
-bypassed to publish a v2 candidate. Private runtimes, dual-architecture signed
-conformance and the unified preview/stable controller remain pending development.
+The earlier staged release workflow is retained until the production Host
+controller is connected. Its fixed v1 product gate must not be bypassed to publish
+a v2 candidate. The unified preview/stable controller remains pending development.
 Production signing keys are supplied only in the protected signing job; no
 private key file is read or exported. Existing releases and tags are not changed.
 
 Licensed under Apache-2.0. See [LICENSE](LICENSE).
+
+## Package execution
+
+The development package includes a private .NET runtime for `win-x64` and
+`win-arm64`, including `createdump.exe`, runtime notices and the exact locked
+third-party dependency licenses. Signing and verification use the shared ordinal
+canonical inventory. Conformance launches the signed payload with shared runtime
+lookup disabled and checks the actual loaded `coreclr.dll` path.
+
+CI runs the source and signed package profiles on native x64 and ARM64 runners.
+Original TRX and package hash receipts are retained as artifacts. Organization
+signing, production Host acceptance and protected publication remain separate
+release gates.
+
+System TLS validates the certificate on each control and data connection through
+FluentFTP's public custom stream interface. A data connection using an untrusted
+certificate is refused before projecting directory entries or content.
