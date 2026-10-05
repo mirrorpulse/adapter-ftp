@@ -40,11 +40,21 @@ endpoints. They exercise two authenticated sources, cursor boundaries, plaintext
 consent, stale read rejection, explicit/implicit TLS, invalid certificates and
 oversized or escaping listings. Test fixtures use no user files or live servers.
 
-The earlier staged release workflow is retained until the production Host
-controller is connected. Its fixed v1 product gate must not be bypassed to publish
-a v2 candidate. The unified preview/stable controller remains pending development.
-Production signing keys are supplied only in the protected signing job; no
-private key file is read or exported. Existing releases and tags are not changed.
+Preview candidates are resolved from `develop` as `X.Y.Z-preview.N`. Run the
+release workflow with `publish=false` to verify a disposable candidate. Actual
+preview publication requires `publish=true` and the exact `PUBLISH` confirmation.
+Stable publication starts from a reviewed `develop` PR merged into `main`, with
+one `breaking`, `feature` or `fix` classification, and requires the protected
+`stable` environment approval.
+
+Each candidate is built once, signed, frozen with its exact source and hashes,
+and tested on native x64 and ARM64. The controller consumes fixed SDK 0.2.1
+conformance assets and the fixed production Host verifier. The Host profile
+checks separate TLS sources, root credentials, CfSharp reads, disabled roots,
+private runtime loading and safe mutation refusal. Safe write capabilities remain
+an open release requirement. Production signing keys are supplied only in the
+protected signing job; no private key file is read or exported. Existing releases
+and tags remain immutable.
 
 Licensed under Apache-2.0. See [LICENSE](LICENSE).
 

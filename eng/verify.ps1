@@ -21,3 +21,7 @@ $counts = $trx.TestRun.ResultSummary.Counters
 if ($counts.total -ne 8 -or $counts.executed -ne 8 -or $counts.passed -ne 8 -or $counts.notExecuted -ne 0) {
     throw 'All FTP/FTPS source cases must execute without skips.'
 }
+& pwsh -NoProfile -File (Join-Path $PSScriptRoot 'verify-adapter-version.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Provider version policy verification failed.' }
+& pwsh -NoProfile -File (Join-Path $PSScriptRoot 'verify-adapter-publishing.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Provider publication policy verification failed.' }
