@@ -13,7 +13,7 @@ internal sealed class FtpRecoveryRequiredException(string recoveryRelativePath) 
 /// <summary>Recoverable optimistic publication; the FTP server does not supply version CAS.</summary>
 internal static class FtpUploadOperations
 {
-    private sealed record Receipt(string Fingerprint, string Digest, string? OriginalDigest, string Phase);
+    internal sealed record Receipt(string Fingerprint, string Digest, string? OriginalDigest, string Phase);
     private static readonly string[] PrivatePrefixes = [".mp-stage-", ".mp-recovery-", ".mp-journal-"];
 
     public static bool IsPrivateName(string name) =>
@@ -30,7 +30,7 @@ internal static class FtpUploadOperations
     public static string Fingerprint(AdapterOperationRequest operation, long length) =>
         Convert.ToHexString(SHA256.HashData(AdapterProtocolJson.Encode(new { type = "Upload", operation, length })));
 
-    private static string Sibling(string path, string kind, Guid operation)
+    public static string Sibling(string path, string kind, Guid operation)
     {
         int separator = path.LastIndexOf('/');
         return (separator < 0 ? "" : path[..(separator + 1)]) + ".mp-" + kind + "-" + operation.ToString("N");
@@ -154,7 +154,7 @@ internal static class FtpUploadOperations
     private static async Task<string> RevisionAsync(FtpWorkerRoot root, string relative, CancellationToken token) =>
         await FtpOperations.RevisionAsync(root, relative, token).ConfigureAwait(false) ?? throw new FtpRecoveryRequiredException(relative);
 
-    private static async Task<string?> DigestAsync(FtpWorkerRoot root, string relative, CancellationToken token)
+    public static async Task<string?> DigestAsync(FtpWorkerRoot root, string relative, CancellationToken token)
     {
         string? before = await FtpOperations.RevisionAsync(root, relative, token).ConfigureAwait(false);
         if (before is null) return null;
@@ -169,7 +169,7 @@ internal static class FtpUploadOperations
         return digest;
     }
 
-    private static async Task<Receipt?> ReadReceiptAsync(FtpWorkerRoot root, string relative, CancellationToken token)
+    public static async Task<Receipt?> ReadReceiptAsync(FtpWorkerRoot root, string relative, CancellationToken token)
     {
         if (await FtpOperations.RevisionAsync(root, relative, token).ConfigureAwait(false) is null) return null;
         try
@@ -198,7 +198,7 @@ internal static class FtpUploadOperations
 
     private static bool IsDigest(string? digest) => digest is { Length: 64 } && digest.All(Uri.IsHexDigit);
 
-    private static async Task WriteReceiptAsync(FtpWorkerRoot root, string relative, Receipt receipt, CancellationToken token)
+    public static async Task WriteReceiptAsync(FtpWorkerRoot root, string relative, Receipt receipt, CancellationToken token)
     {
         byte[] bytes = AdapterProtocolJson.Encode(receipt);
         using var input = new MemoryStream(bytes, writable: false);

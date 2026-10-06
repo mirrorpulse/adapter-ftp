@@ -18,10 +18,14 @@ certificate. An untrusted certificate is refused before password authentication.
 Passwords arrive only through the Host credential exchange and are not logged.
 
 The current v2 development boundary supports directory paging, Stat, bounded
-binary range reads and optimistic file uploads. Each root accepts `mutationPolicy`
+binary range reads, optimistic file uploads, same-root file moves, retained file
+deletion, directory creation and empty-directory deletion. Each root accepts `mutationPolicy`
 as `Optimistic` (default) or `ReadOnly`. Read-only roots refuse uploads before
-receiving bytes. Move, delete and directory mutations remain unavailable until
-their recovery paths are implemented and verified.
+receiving bytes or issuing mutation commands. Cross-root moves, directory-tree
+moves and replacement of an existing move destination are refused explicitly.
+File moves retain a verified previous copy; file deletion preserves the source
+under its recovery name. Empty-directory deletion uses one nonrecursive `RMD`.
+Directories containing user data or reserved recovery evidence cannot be deleted.
 
 Uploads use the SDK transfer lease, a verified sibling staging file, metadata and
 full-content checks before publication, and a retained copy of the previous file.
@@ -58,7 +62,8 @@ endpoints. They exercise two authenticated sources, cursor boundaries, plaintext
 consent, stale read rejection, explicit/implicit TLS, invalid certificates and
 oversized or escaping listings, multi-frame and empty uploads, retained originals,
 operation replay, unchanged-metadata edits, ambiguous publication and upload
-cancellation. Test fixtures use no user files or live servers.
+cancellation, actual file moves/deletes, nested directory creation, conservative
+empty deletion and cross-root/destination refusal. Test fixtures use no user files or live servers.
 
 Preview candidates are resolved from `develop` as `X.Y.Z-preview.N`. Run the
 release workflow with `publish=false` to verify a disposable candidate. Actual

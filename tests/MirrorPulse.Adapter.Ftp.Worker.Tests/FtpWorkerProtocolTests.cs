@@ -285,6 +285,91 @@ public sealed class FtpWorkerProtocolTests
         }
     }
 
+    [TestMethod]
+    public async Task FileMovesAndDeletesRetainOriginalsAndReplayWithoutRepeatingMutations()
+    {
+        foreach (FtpSecurityMode mode in new[] { FtpSecurityMode.Plain, FtpSecurityMode.ExplicitTls, FtpSecurityMode.ImplicitTls })
+        {
+            await using var session = await FtpWorkerSession.StartAsync(mode);
+            string revision = (await session.RequestAsync("Stat", new { rootKey = "left", path = "same.txt" })).Payload.GetProperty("revision").GetString()!;
+            Guid move = Guid.NewGuid();
+            var request = new AdapterOperationRequest(move, "left", "same.txt", "left", "renamed.txt", new(revision));
+            AdapterControlFrame moved = await session.RequestAsync("Move", request);
+            Assert.AreEqual("MutationComplete", moved.MessageType, moved.Payload.GetRawText());
+            Assert.IsNull(session.Left.ReadStoredFile("/same.txt"));
+            CollectionAssert.AreEqual(Encoding.UTF8.GetBytes("left"), session.Left.ReadStoredFile("/renamed.txt"));
+            CollectionAssert.AreEqual(Encoding.UTF8.GetBytes("left"), session.Left.ReadStoredFile("/.mp-recovery-" + move.ToString("N")));
+            int commands = session.Left.MutationCommands.Count;
+            Assert.AreEqual("MutationComplete", (await session.RequestAsync("Move", request)).MessageType);
+            Assert.HasCount(commands, session.Left.MutationCommands);
+            Guid delete = Guid.NewGuid();
+            var removal = new AdapterOperationRequest(delete, "left", "renamed.txt", Preconditions: new(moved.Payload.GetProperty("revision").GetString()));
+            Assert.AreEqual("MutationComplete", (await session.RequestAsync("Delete", removal)).MessageType);
+            Assert.IsNull(session.Left.ReadStoredFile("/renamed.txt"));
+            CollectionAssert.AreEqual(Encoding.UTF8.GetBytes("left"), session.Left.ReadStoredFile("/.mp-recovery-" + delete.ToString("N")));
+            commands = session.Left.MutationCommands.Count;
+            Assert.AreEqual("MutationComplete", (await session.RequestAsync("Delete", removal)).MessageType);
+            Assert.HasCount(commands, session.Left.MutationCommands);
+            session.Left.ReplaceStoredFile("/renamed.txt", Encoding.UTF8.GetBytes("external"));
+            AssertCode("RemoteConflict", await session.RequestAsync("Delete", removal));
+            CollectionAssert.AreEqual(Encoding.UTF8.GetBytes("external"), session.Left.ReadStoredFile("/renamed.txt"));
+            CollectionAssert.AreEqual(Encoding.UTF8.GetBytes("right"), session.Right.ReadStoredFile("/same.txt"));
+            await AssertCacheClearedAsync(session);
+        }
+    }
+
+    [TestMethod]
+    public async Task DirectoryCreationAndEmptyDeletionNeverRemoveChildrenOrReservedRecoveryEvidence()
+    {
+        await using var session = await FtpWorkerSession.StartAsync();
+        var create = new AdapterCreateDirectoryRequest(Guid.NewGuid(), "left", "folder");
+        AdapterControlFrame created = await session.RequestAsync("CreateDirectory", create);
+        Assert.AreEqual("MutationComplete", created.MessageType, created.Payload.GetRawText());
+        Assert.IsTrue(session.Left.HasDirectory("/folder"));
+        Assert.AreEqual("MutationComplete", (await session.RequestAsync("CreateDirectory", create)).MessageType);
+        Assert.AreEqual("MutationComplete", (await session.RequestAsync("CreateDirectory", new AdapterCreateDirectoryRequest(Guid.NewGuid(), "left", "folder/nested"))).MessageType);
+        string revision = (await session.RequestAsync("Stat", new { rootKey = "left", path = "folder" })).Payload.GetProperty("revision").GetString()!;
+        AssertCode("DirectoryNotEmpty", await session.RequestAsync("Delete", new AdapterOperationRequest(Guid.NewGuid(), "left", "folder", Preconditions: new(revision), IsDirectory: true)));
+        Assert.IsTrue(session.Left.HasDirectory("/folder/nested"));
+        Assert.AreEqual("UploadComplete", (await session.UploadAsync("left", "folder/nested/file.bin", [1, 2])).MessageType);
+        AssertCode("DirectoryMoveUnavailable", await session.RequestAsync("Move", new AdapterOperationRequest(Guid.NewGuid(), "left", "folder", "left", "moved", new(revision), true)));
+        CollectionAssert.AreEqual(new byte[] { 1, 2 }, session.Left.ReadStoredFile("/folder/nested/file.bin"));
+        AdapterControlFrame empty = await session.RequestAsync("CreateDirectory", new AdapterCreateDirectoryRequest(Guid.NewGuid(), "left", "empty"));
+        var remove = new AdapterOperationRequest(Guid.NewGuid(), "left", "empty", Preconditions: new(empty.Payload.GetProperty("revision").GetString()), IsDirectory: true);
+        Assert.AreEqual("MutationComplete", (await session.RequestAsync("Delete", remove)).MessageType);
+        Assert.IsFalse(session.Left.HasDirectory("/empty"));
+        Assert.AreEqual("MutationComplete", (await session.RequestAsync("Delete", remove)).MessageType);
+        await AssertCacheClearedAsync(session);
+    }
+
+    [TestMethod]
+    public async Task NamespaceMutationsEnforceReadOnlyRootDestinationAndOperationBindingBoundaries()
+    {
+        await using (var session = await FtpWorkerSession.StartAsync(mutationPolicy: "ReadOnly"))
+        {
+            int commands = session.Left.CommandsReceived;
+            AssertCode("ReadOnlyRoot", await session.RequestAsync("CreateDirectory", new AdapterCreateDirectoryRequest(Guid.NewGuid(), "left", "folder")));
+            AssertCode("ReadOnlyRoot", await session.RequestAsync("Delete", new AdapterOperationRequest(Guid.NewGuid(), "left", "same.txt")));
+            AssertCode("ReadOnlyRoot", await session.RequestAsync("Move", new AdapterOperationRequest(Guid.NewGuid(), "left", "same.txt", "left", "new.txt")));
+            Assert.AreEqual(commands, session.Left.CommandsReceived);
+        }
+        await using (var session = await FtpWorkerSession.StartAsync())
+        {
+            string revision = (await session.RequestAsync("Stat", new { rootKey = "left", path = "same.txt" })).Payload.GetProperty("revision").GetString()!;
+            int commands = session.Left.CommandsReceived;
+            AssertCode("CrossRootMoveUnavailable", await session.RequestAsync("Move", new AdapterOperationRequest(Guid.NewGuid(), "left", "same.txt", "right", "new.txt", new(revision))));
+            Assert.AreEqual(commands, session.Left.CommandsReceived);
+            AssertCode("RemoteConflict", await session.RequestAsync("Move", new AdapterOperationRequest(Guid.NewGuid(), "left", "same.txt", "left", "second.txt", new(revision, false))));
+            AssertCode("RemoteConflict", await session.RequestAsync("Delete", new AdapterOperationRequest(Guid.NewGuid(), "left", "same.txt", Preconditions: new("stale"))));
+            CollectionAssert.AreEqual(Encoding.UTF8.GetBytes("left"), session.Left.ReadStoredFile("/same.txt"));
+            CollectionAssert.AreEqual(Encoding.UTF8.GetBytes("second-left"), session.Left.ReadStoredFile("/second.txt"));
+            Guid operation = Guid.NewGuid();
+            Assert.AreEqual("MutationComplete", (await session.RequestAsync("CreateDirectory", new AdapterCreateDirectoryRequest(operation, "left", "created"))).MessageType);
+            AssertCode("OperationBindingMismatch", await session.UploadAsync("left", "new.txt", [1], operation));
+            AssertCode("RootMutationForbidden", await session.RequestAsync("Delete", new AdapterOperationRequest(Guid.NewGuid(), "left", "", IsDirectory: true)));
+        }
+    }
+
     private static void AssertCode(string code, AdapterControlFrame response)
     {
         Assert.AreEqual("OperationError", response.MessageType);

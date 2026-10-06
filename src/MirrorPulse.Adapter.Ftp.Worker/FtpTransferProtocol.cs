@@ -63,6 +63,9 @@ internal sealed class FtpTransferProtocol(AdapterControlChannel channel, Adapter
                         { RootKey = address.RootKey }, token).ConfigureAwait(false);
                         break;
                     case "Upload": await BeginUploadAsync(command, address, root, token).ConfigureAwait(false); break;
+                    case "Move":
+                    case "Delete":
+                    case "CreateDirectory": await MutateAsync(command, root, token).ConfigureAwait(false); break;
                     default: throw new InvalidDataException("ConditionalMutationUnavailable");
                 }
             }
@@ -82,8 +85,7 @@ internal sealed class FtpTransferProtocol(AdapterControlChannel channel, Adapter
         if (length < 0 || stream == Guid.Empty || _uploads.Count >= 4) throw new InvalidDataException("UploadLimit");
         if (_uploads.Values.Any(upload => upload.Operation.OperationId == operation.OperationId)) throw new InvalidDataException("OperationInProgress");
         string fingerprint = FtpUploadOperations.Fingerprint(operation, length);
-        if (_bindings.TryGetValue(operation.OperationId, out string? previous) && previous != fingerprint)
-            throw new InvalidDataException("OperationBindingMismatch");
+        BindOperation(operation.OperationId, fingerprint);
         await FtpUploadOperations.PrepareAsync(root, operation, length, token).ConfigureAwait(false);
         var lease = new AdapterTransferLease(cache);
         try
@@ -92,12 +94,34 @@ internal sealed class FtpTransferProtocol(AdapterControlChannel channel, Adapter
                 new(command.RequestId, arguments.InstanceId, arguments.WorkerSessionId, stream, address.RootKey, 0, length), lease));
         }
         catch { await lease.DisposeAsync().ConfigureAwait(false); throw; }
-        if (_bindings.TryAdd(operation.OperationId, fingerprint))
+        await ReplyAsync(command, "UploadReady", new { rootKey = address.RootKey, operationId = operation.OperationId, streamId = stream }, token).ConfigureAwait(false);
+    }
+
+    private void BindOperation(Guid operation, string fingerprint)
+    {
+        if (_bindings.TryGetValue(operation, out string? previous) && previous != fingerprint)
+            throw new InvalidDataException("OperationBindingMismatch");
+        if (_bindings.TryAdd(operation, fingerprint))
         {
-            _bindingOrder.Enqueue(operation.OperationId);
+            _bindingOrder.Enqueue(operation);
             if (_bindingOrder.Count > 256) _bindings.Remove(_bindingOrder.Dequeue());
         }
-        await ReplyAsync(command, "UploadReady", new { rootKey = address.RootKey, operationId = operation.OperationId, streamId = stream }, token).ConfigureAwait(false);
+    }
+
+    private async Task MutateAsync(AdapterControlFrame command, FtpWorkerRoot root, CancellationToken token)
+    {
+        AdapterOperationRequest operation;
+        if (command.MessageType == "CreateDirectory")
+        {
+            AdapterCreateDirectoryRequest create = AdapterProtocolJson.Decode<AdapterCreateDirectoryRequest>(Encoding.UTF8.GetBytes(command.Payload.GetRawText()));
+            operation = new(create.OperationId, create.RootKey, create.Path, Preconditions: new(null, create.MustBeAbsent), IsDirectory: true);
+        }
+        else operation = AdapterProtocolJson.Decode<AdapterOperationRequest>(Encoding.UTF8.GetBytes(command.Payload.GetRawText()));
+        AdapterProtocolJson.ValidateMutation(operation, requiresDestination: command.MessageType == "Move");
+        if (_uploads.Values.Any(upload => upload.Operation.OperationId == operation.OperationId)) throw new InvalidDataException("OperationInProgress");
+        BindOperation(operation.OperationId, FtpNamespaceOperations.Fingerprint(command.MessageType, operation));
+        string? revision = await FtpNamespaceOperations.MutateAsync(command.MessageType, root, operation, cache, token).ConfigureAwait(false);
+        await ReplyAsync(command, "MutationComplete", new { rootKey = operation.RootKey, operationId = operation.OperationId, revision }, token).ConfigureAwait(false);
     }
 
     private async Task ReceiveAsync(AdapterBinaryChunk chunk, CancellationToken token)
@@ -157,7 +181,8 @@ internal sealed class FtpTransferProtocol(AdapterControlChannel channel, Adapter
     {
         string[] codes = ["UnknownRoot", "RootOffline", "InvalidPath", "InvalidCursor", "InvalidPageSize", "InvalidRange", "RemoteConflict",
             "SourceUnavailable", "DirectoryEnumerationIncomplete", "ConditionalMutationUnavailable", "OperationBindingMismatch", "OperationInProgress",
-            "ReadOnlyRoot", "RootMutationForbidden", "ReservedPath", "UploadLimit", "Canceled", "CancelRootMismatch", "CancelOperationMismatch"];
+            "ReadOnlyRoot", "RootMutationForbidden", "ReservedPath", "UploadLimit", "Canceled", "CancelRootMismatch", "CancelOperationMismatch",
+            "CrossRootMoveUnavailable", "DirectoryMoveUnavailable", "DirectoryNotEmpty"];
         string code = exception is FtpRecoveryRequiredException ? "MutationOutcomeAmbiguous" :
             exception is System.Security.Authentication.AuthenticationException ? "CertificateRejected" :
             exception is InvalidDataException && codes.Contains(exception.Message, StringComparer.Ordinal) ? exception.Message :

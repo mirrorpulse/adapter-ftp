@@ -23,6 +23,8 @@ internal sealed class FtpServerFixture : IAsyncDisposable
     private string? _renameFrom;
     private bool _protectData;
     private int _uploadCount;
+    private string _currentDirectory = "/";
+    private readonly HashSet<string> _directories = new(StringComparer.Ordinal) { "/" };
 
     public FtpServerFixture(FtpSecurityMode mode, string label)
     {
@@ -81,6 +83,7 @@ internal sealed class FtpServerFixture : IAsyncDisposable
 
     public byte[]? ReadStoredFile(string path) =>
         _files.TryGetValue(path, out var file) ? file.Content.ToArray() : null;
+    public bool HasDirectory(string path) => _directories.Contains(path);
 
     public async ValueTask DisposeAsync()
     {
@@ -160,6 +163,7 @@ internal sealed class FtpServerFixture : IAsyncDisposable
                         : $"227 Entering Passive Mode (127,0,0,1,{port / 256},{port % 256})\r\n");
                     break;
                 case "MLSD":
+                    if (!_directories.Contains(argument)) { await SendAsync(stream, "550 Not found\r\n"); break; }
                     await SendAsync(stream, "150 Opening data connection\r\n");
                     using (TcpClient data = await (_dataListener ?? throw new InvalidDataException()).AcceptTcpClientAsync())
                     {
@@ -168,6 +172,8 @@ internal sealed class FtpServerFixture : IAsyncDisposable
                         if (ListingOverride is not null) await SendAsync(dataStream, ListingOverride);
                         else foreach (var item in _files.Where(item => item.Key.StartsWith(prefix, StringComparison.Ordinal) && !item.Key[prefix.Length..].Contains('/')))
                             await SendAsync(dataStream, $"type=file;size={item.Value.Content.Length};modify={item.Value.Modified:yyyyMMddHHmmss}; {item.Key[prefix.Length..]}\r\n");
+                        if (ListingOverride is null) foreach (string directory in _directories.Where(path => path != "/" && path.StartsWith(prefix, StringComparison.Ordinal) && !path[prefix.Length..].Contains('/')))
+                            await SendAsync(dataStream, $"type=dir;size=0;modify=20260929120000; {directory[prefix.Length..]}\r\n");
                     }
                     _dataListener?.Stop();
                     await SendAsync(stream, "226 Transfer complete\r\n");
@@ -196,6 +202,8 @@ internal sealed class FtpServerFixture : IAsyncDisposable
                     await SendAsync(stream, "226 Transfer complete\r\n");
                     break;
                 case "STOR":
+                    string parent = argument[..argument.LastIndexOf('/')];
+                    if (!_directories.Contains(parent.Length == 0 ? "/" : parent)) { await SendAsync(stream, "550 Parent missing\r\n"); break; }
                     await SendAsync(stream, "150 Opening data connection\r\n");
                     using (TcpClient data = await (_dataListener ?? throw new InvalidDataException()).AcceptTcpClientAsync())
                     {
@@ -254,11 +262,25 @@ internal sealed class FtpServerFixture : IAsyncDisposable
                 case "DELE":
                     await SendAsync(stream, _files.Remove(argument) ? "250 Deleted\r\n" : "550 Not found\r\n");
                     break;
+                case "CWD":
+                    if (_directories.Contains(argument)) { _currentDirectory = argument; await SendAsync(stream, "250 Directory changed\r\n"); }
+                    else await SendAsync(stream, "550 Not found\r\n");
+                    break;
+                case "MKD":
+                    string directoryParent = argument[..argument.LastIndexOf('/')];
+                    bool created = !_files.ContainsKey(argument) && _directories.Contains(directoryParent.Length == 0 ? "/" : directoryParent) && _directories.Add(argument);
+                    await SendAsync(stream, created ? "257 Directory created\r\n" : "550 Cannot create directory\r\n");
+                    break;
+                case "RMD":
+                    bool removed = argument != "/" && !_files.Keys.Any(path => path.StartsWith(argument + "/", StringComparison.Ordinal)) &&
+                        !_directories.Any(path => path.StartsWith(argument + "/", StringComparison.Ordinal)) && _directories.Remove(argument);
+                    await SendAsync(stream, removed ? "250 Directory removed\r\n" : "550 Directory is not empty or unavailable\r\n");
+                    break;
                 case "SYST":
                     await SendAsync(stream, "215 UNIX Type: L8\r\n");
                     break;
                 case "PWD":
-                    await SendAsync(stream, "257 \"/\" is current directory\r\n");
+                    await SendAsync(stream, "257 \"" + _currentDirectory + "\" is current directory\r\n");
                     break;
                 case "QUIT":
                     await SendAsync(stream, "221 Goodbye\r\n");
