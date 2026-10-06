@@ -112,7 +112,12 @@ internal sealed class FtpServerFixture : IAsyncDisposable
     {
         while (!_lifetime.IsCancellationRequested)
         {
-            using TcpClient client = await _listener.AcceptTcpClientAsync(_lifetime.Token);
+            TcpClient accepted;
+            try { accepted = await _listener.AcceptTcpClientAsync(_lifetime.Token); }
+            catch (Exception exception) when (_lifetime.IsCancellationRequested &&
+                exception is OperationCanceledException or ObjectDisposedException or SocketException)
+            { break; }
+            using TcpClient client = accepted;
             _protectData = false;
             _restartOffset = 0;
             _renameFrom = null;
