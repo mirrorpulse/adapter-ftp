@@ -85,9 +85,10 @@ Each candidate is built once, signed, frozen with its exact source and hashes,
 and tested on native x64 and ARM64. The controller consumes fixed SDK 0.2.1
 conformance assets and the fixed production Host verifier. The Host profile
 checks separate TLS sources, root credentials, CfSharp reads, disabled roots,
-private runtime loading and the existing mutation refusal profile. The production
-Host mutation profile and remaining write capabilities must pass before formal v2
-publication. Production signing keys are supplied only in the
+private runtime loading, optimistic uploads and stable retries, retained content,
+file moves/deletes, directory creation/empty deletion and read-only root refusal.
+Both native profiles must pass against the exact signed candidate before formal
+v2 publication. Production signing keys are supplied only in the
 protected signing job; no private key file is read or exported. Existing releases
 and tags remain immutable.
 
