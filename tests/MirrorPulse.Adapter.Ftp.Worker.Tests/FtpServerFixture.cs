@@ -65,6 +65,19 @@ internal sealed class FtpServerFixture : IAsyncDisposable
     public bool UseDifferentDataCertificate { get; set; }
 
     public bool FailNextStore { get; set; }
+    public bool FailNextPublish { get; set; }
+    public bool LoseNextPublishAcknowledgement { get; set; }
+    public Action? AfterStageStored { get; set; }
+    public int PublishedUploads { get; private set; }
+    public List<string> MutationCommands { get; } = [];
+    public string ServerFailure => _server.Exception?.InnerException?.ToString() ?? "none";
+    public string[] StoredPaths => _files.Keys.ToArray();
+
+    public void ReplaceStoredFile(string path, byte[] content, bool keepTimestamp = false)
+    {
+        DateTime modified = keepTimestamp && _files.TryGetValue(path, out var previous) ? previous.Modified : DateTime.UtcNow;
+        _files[path] = (content.ToArray(), modified);
+    }
 
     public byte[]? ReadStoredFile(string path) =>
         _files.TryGetValue(path, out var file) ? file.Content.ToArray() : null;
@@ -107,6 +120,7 @@ internal sealed class FtpServerFixture : IAsyncDisposable
             CommandsReceived++;
             string command = line.Split(' ', 2)[0].ToUpperInvariant();
             string argument = line.Length > command.Length ? line[(command.Length + 1)..] : string.Empty;
+            if (command is "STOR" or "RNFR" or "RNTO") MutationCommands.Add(line);
             switch (command)
             {
                 case "AUTH" when _mode == FtpSecurityMode.ExplicitTls && argument == "TLS":
@@ -193,6 +207,7 @@ internal sealed class FtpServerFixture : IAsyncDisposable
                             _uploadCount++;
                             _files[argument] = (output.ToArray(),
                                 new DateTime(2026, 9, 29, 12, 0, 0, DateTimeKind.Utc).AddSeconds(_uploadCount));
+                            if (argument.StartsWith("/.mp-stage-", StringComparison.Ordinal)) AfterStageStored?.Invoke();
                         }
                     }
 
@@ -219,10 +234,22 @@ internal sealed class FtpServerFixture : IAsyncDisposable
                         break;
                     }
 
+                    bool publishing = _renameFrom.StartsWith("/.mp-stage-", StringComparison.Ordinal);
+                    if (publishing && FailNextPublish)
+                    {
+                        FailNextPublish = false;
+                        _renameFrom = null;
+                        await SendAsync(stream, "451 Publication failed\r\n");
+                        break;
+                    }
+
                     _files[argument] = _files[_renameFrom];
                     _files.Remove(_renameFrom);
                     _renameFrom = null;
-                    await SendAsync(stream, "250 Rename complete\r\n");
+                    if (publishing) PublishedUploads++;
+                    bool lost = publishing && LoseNextPublishAcknowledgement;
+                    if (publishing) LoseNextPublishAcknowledgement = false;
+                    await SendAsync(stream, lost ? "451 Publication acknowledgement unavailable\r\n" : "250 Rename complete\r\n");
                     break;
                 case "DELE":
                     await SendAsync(stream, _files.Remove(argument) ? "250 Deleted\r\n" : "550 Not found\r\n");

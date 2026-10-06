@@ -19,7 +19,8 @@ internal static class FtpOperations
         {
             IReadOnlyList<FtpListItem> children = await root.Client.ReadBoundedListingAsync(path, token).ConfigureAwait(false);
             return "ftp-directory:" + Convert.ToHexString(SHA256.HashData(AdapterProtocolJson.Encode(
-                children.OrderBy(item => item.Name, StringComparer.Ordinal).Select(item => new { item.Name, revision = Revision(item) }))));
+                children.Where(item => !FtpUploadOperations.IsPrivateName(item.Name)).OrderBy(item => item.Name, StringComparer.Ordinal)
+                    .Select(item => new { item.Name, revision = Revision(item) }))));
         }
         int separator = path.LastIndexOf('/');
         string parent = separator == 0 ? "/" : path[..separator];
@@ -44,7 +45,7 @@ internal static class FtpOperations
                 throw new InvalidDataException("InvalidCursor");
         }
         IReadOnlyList<FtpListItem> listed = await root.Client.ReadBoundedListingAsync(FtpPathPolicy.Resolve(root.Configuration.Endpoint, address.Path), token).ConfigureAwait(false);
-        FtpListItem[] children = listed.OrderBy(item => item.Name, StringComparer.Ordinal).ToArray();
+        FtpListItem[] children = listed.Where(item => !FtpUploadOperations.IsPrivateName(item.Name)).OrderBy(item => item.Name, StringComparer.Ordinal).ToArray();
         if (offset > children.Length) throw new InvalidDataException("InvalidCursor");
         var entries = new List<object>();
         foreach (FtpListItem item in children.Skip(offset).Take(size))

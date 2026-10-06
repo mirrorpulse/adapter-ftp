@@ -3,7 +3,7 @@ using MirrorPulse.Adapter.Sdk;
 
 namespace MirrorPulse.Adapter.Ftp.Worker;
 
-internal sealed record FtpWorkerRoot(string Key, FtpWorkerConfiguration Configuration, BoundedFtpClient Client);
+internal sealed record FtpWorkerRoot(string Key, FtpWorkerConfiguration Configuration, BoundedFtpClient Client, bool AllowsMutations);
 
 internal sealed class FtpWorkerRoots : IDisposable
 {
@@ -18,6 +18,8 @@ internal sealed class FtpWorkerRoots : IDisposable
             foreach (AdapterRootBinding binding in ready.Roots)
             {
                 if (!binding.Enabled) { roots._roots.Add(binding.RootKey, null); continue; }
+                string mutationPolicy = binding.Configuration.GetValueOrDefault("mutationPolicy") ?? "Optimistic";
+                if (mutationPolicy is not ("Optimistic" or "ReadOnly")) throw new InvalidDataException("InvalidMutationPolicy");
                 string endpoint = binding.Configuration.GetValueOrDefault("endpoint") ?? throw new InvalidDataException("EndpointRequired");
                 if (!Enum.TryParse(binding.Configuration.GetValueOrDefault("securityMode") ?? "ExplicitTls", out FtpSecurityMode mode))
                     throw new InvalidDataException("InvalidSecurityMode");
@@ -38,7 +40,7 @@ internal sealed class FtpWorkerRoots : IDisposable
                     throw new InvalidDataException("CredentialRejected");
                 string secret = response.Payload.GetProperty("secret").GetString() ?? throw new InvalidDataException("CredentialRequired");
                 BoundedFtpClient client = await FtpWorkerConnection.ConnectAsync(configuration, secret, token).ConfigureAwait(false);
-                try { roots._roots.Add(binding.RootKey, new(binding.RootKey, configuration, client)); }
+                try { roots._roots.Add(binding.RootKey, new(binding.RootKey, configuration, client, mutationPolicy == "Optimistic")); }
                 catch { client.Dispose(); throw; }
             }
             return roots;

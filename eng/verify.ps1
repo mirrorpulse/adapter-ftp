@@ -18,7 +18,7 @@ foreach ($project in $projects) {
 if ($LASTEXITCODE -ne 0) { throw 'Actual FTP/FTPS conformance failed.' }
 [xml]$trx = Get-Content -LiteralPath artifacts/test-results/ftp-v2.trx -Raw
 $counts = $trx.TestRun.ResultSummary.Counters
-if ($counts.total -ne 8 -or $counts.executed -ne 8 -or $counts.passed -ne 8 -or $counts.notExecuted -ne 0) {
+if ($counts.total -ne 15 -or $counts.executed -ne 15 -or $counts.passed -ne 15 -or $counts.notExecuted -ne 0) {
     throw 'All FTP/FTPS source cases must execute without skips.'
 }
 & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'verify-adapter-version.ps1')

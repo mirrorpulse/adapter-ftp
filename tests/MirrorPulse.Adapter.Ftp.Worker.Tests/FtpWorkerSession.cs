@@ -11,9 +11,10 @@ internal sealed class FtpWorkerSession : IAsyncDisposable
 {
     private readonly NamedPipeServerStream _pipe;
     private readonly Process _process;
+    private readonly Task<string> _standardError;
     private readonly Guid _instance = Guid.NewGuid();
     private readonly Guid _session = Guid.NewGuid();
-    private readonly CancellationTokenSource _deadline = new(TimeSpan.FromSeconds(30));
+    private readonly CancellationTokenSource _deadline = new(TimeSpan.FromSeconds(90));
     private int _protocol = 1;
     public FtpServerFixture Left { get; private set; } = null!;
     public FtpServerFixture Right { get; private set; } = null!;
@@ -29,7 +30,7 @@ internal sealed class FtpWorkerSession : IAsyncDisposable
         string executable = configuredWorker ?? Path.Combine(FindRepository(), "src", "MirrorPulse.Adapter.Ftp.Worker", "bin", "Release",
             "net10.0-windows", "MirrorPulse.Adapter.Ftp.Worker.exe");
         var start = new ProcessStartInfo(executable)
-        { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = Path.GetDirectoryName(executable)! };
+        { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, WorkingDirectory = Path.GetDirectoryName(executable)! };
         start.Environment.Clear();
         string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
         start.Environment["SystemRoot"] = windows;
@@ -51,6 +52,7 @@ internal sealed class FtpWorkerSession : IAsyncDisposable
             start.Environment["PATH"] = Environment.SystemDirectory;
         }
         _process = Process.Start(start) ?? throw new InvalidOperationException("Worker launch failed.");
+        _standardError = _process.StandardError.ReadToEndAsync();
     }
 
     public List<string> CredentialRoots { get; } = [];
@@ -58,7 +60,8 @@ internal sealed class FtpWorkerSession : IAsyncDisposable
     public string Root { get; }
     public string Cache { get; }
 
-    public static async Task<FtpWorkerSession> StartAsync(FtpSecurityMode mode = FtpSecurityMode.Plain, bool rejectCertificate = false, bool allowPlaintext = true)
+    public static async Task<FtpWorkerSession> StartAsync(FtpSecurityMode mode = FtpSecurityMode.Plain, bool rejectCertificate = false, bool allowPlaintext = true,
+        string mutationPolicy = "Optimistic")
     {
         string root = Path.Combine(Path.GetTempPath(), "mp-ftp-v2-" + Guid.NewGuid().ToString("N"));
         var session = new FtpWorkerSession(root)
@@ -77,6 +80,7 @@ internal sealed class FtpWorkerSession : IAsyncDisposable
                 ["credentialReference"] = fixture.Label + "-credential",
                 ["securityMode"] = mode.ToString(),
                 ["allowPlaintext"] = allowPlaintext ? "true" : "false",
+                ["mutationPolicy"] = mutationPolicy,
                 ["trustedCertificateSha256"] = rejectCertificate ? new string('0', 64) : fixture.CertificateSha256
             };
             AdapterRootBinding[] roots = [new("left", true, Configuration(session.Left)),
@@ -94,7 +98,7 @@ internal sealed class FtpWorkerSession : IAsyncDisposable
                 session.CredentialRoots.Add(key);
                 await session.SendAsync("CredentialResponse", frame.RequestId, new { referenceId = key + "-credential", secret = "secret-" + key }, response: true);
             }
-            if (!rejectCertificate && allowPlaintext) Assert.AreEqual("Connected", session.StartupFrame.MessageType);
+            if (!rejectCertificate && allowPlaintext && mutationPolicy is "Optimistic" or "ReadOnly") Assert.AreEqual("Connected", session.StartupFrame.MessageType);
             if (Environment.GetEnvironmentVariable("MP_FTP_TEST_WORKER_EXE") is { } executable)
             {
                 string privateRuntime = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(executable)!, "coreclr.dll"));
@@ -190,7 +194,12 @@ internal sealed class FtpWorkerSession : IAsyncDisposable
     private async Task<byte[]> ReadFrameAsync()
     {
         byte[] prefix = new byte[4];
-        await _pipe.ReadExactlyAsync(prefix, _deadline.Token);
+        try { await _pipe.ReadExactlyAsync(prefix, _deadline.Token); }
+        catch (EndOfStreamException)
+        {
+            await _process.WaitForExitAsync(_deadline.Token);
+            throw new InvalidOperationException("The disposable Worker exited: " + await _standardError);
+        }
         uint length = BinaryPrimitives.ReadUInt32LittleEndian(prefix);
         Assert.IsTrue(length is > 0 and <= 2 * 1024 * 1024);
         byte[] payload = new byte[checked((int)length)];

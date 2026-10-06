@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using MirrorPulse.Adapter.Sdk;
 
@@ -130,5 +131,170 @@ public sealed class FtpWorkerProtocolTests
             Assert.IsTrue(failed.Payload.GetProperty("code").GetString() is "DirectoryEnumerationIncomplete" or "InvalidPath");
             Assert.AreEqual("right", Encoding.UTF8.GetString(await session.ReadRangeAsync("right", "same.txt", 5)));
         }
+    }
+
+    [TestMethod]
+    public async Task OptimisticUploadsUseVerifiedStagingAndPreservePreviousContentAcrossAllTransports()
+    {
+        foreach (FtpSecurityMode mode in new[] { FtpSecurityMode.Plain, FtpSecurityMode.ExplicitTls, FtpSecurityMode.ImplicitTls })
+        {
+            await using var session = await FtpWorkerSession.StartAsync(mode);
+            Guid operation = Guid.NewGuid();
+            string revision = (await session.RequestAsync("Stat", new { rootKey = "left", path = "same.txt" })).Payload.GetProperty("revision").GetString()!;
+            byte[] content = Encoding.UTF8.GetBytes("verified replacement");
+            AdapterControlFrame complete = await session.UploadAsync("left", "same.txt", content, operation, new(revision, false));
+            Assert.AreEqual("UploadComplete", complete.MessageType, mode + ": " + complete.Payload.GetRawText() + " Server: " + session.Left.ServerFailure + " Commands: " + string.Join(";", session.Left.MutationCommands));
+            Assert.AreEqual(Convert.ToHexString(SHA256.HashData(content)), complete.Payload.GetProperty("contentSha256").GetString());
+            CollectionAssert.AreEqual(content, session.Left.ReadStoredFile("/same.txt"));
+            CollectionAssert.AreEqual(Encoding.UTF8.GetBytes("left"), session.Left.ReadStoredFile("/.mp-recovery-" + operation.ToString("N")));
+            Assert.AreEqual("right", Encoding.UTF8.GetString(session.Right.ReadStoredFile("/same.txt")!));
+            Assert.IsNull(session.Left.ReadStoredFile("/.mp-stage-" + operation.ToString("N")));
+            Assert.AreEqual(complete.Payload.GetProperty("revision").GetString(),
+                (await session.RequestAsync("Stat", new { rootKey = "left", path = "same.txt" })).Payload.GetProperty("revision").GetString());
+            AdapterControlFrame page = await session.RequestAsync("List", new { rootKey = "left", path = "", pageSize = 512 });
+            Assert.AreEqual(2, page.Payload.GetProperty("entries").GetArrayLength());
+            Assert.IsFalse(page.Payload.GetProperty("entries").EnumerateArray().Any(item => item.GetProperty("relativePath").GetString()!.StartsWith(".mp-", StringComparison.Ordinal)));
+            await AssertCacheClearedAsync(session);
+        }
+    }
+
+    [TestMethod]
+    public async Task MultiFrameAndEmptyUploadsPreserveTheirExactLengthAndClearTransferLeases()
+    {
+        await using var session = await FtpWorkerSession.StartAsync();
+        byte[] large = new byte[AdapterBinaryChunkV2Codec.MaximumChunkBytes + 173];
+        RandomNumberGenerator.Fill(large);
+        Assert.AreEqual("UploadComplete", (await session.UploadAsync("left", "large.bin", large)).MessageType);
+        CollectionAssert.AreEqual(large, session.Left.ReadStoredFile("/large.bin"));
+        Assert.AreEqual("UploadComplete", (await session.UploadAsync("right", "empty.bin", [])).MessageType);
+        Assert.IsEmpty(session.Right.ReadStoredFile("/empty.bin")!);
+        await AssertCacheClearedAsync(session);
+    }
+
+    [TestMethod]
+    public async Task RootPoliciesStaleRevisionsAndReservedPathsRefuseWritesBeforeReceivingBytes()
+    {
+        await using (var session = await FtpWorkerSession.StartAsync(mutationPolicy: "ReadOnly"))
+        {
+            int before = session.Left.CommandsReceived;
+            AssertCode("ReadOnlyRoot", await session.UploadAsync("left", "new.txt", [1]));
+            Assert.AreEqual(before, session.Left.CommandsReceived);
+            Assert.IsNull(session.Left.ReadStoredFile("/new.txt"));
+        }
+        await using (var session = await FtpWorkerSession.StartAsync(mutationPolicy: "invalid"))
+        {
+            Assert.AreEqual("Error", session.StartupFrame!.MessageType);
+            Assert.IsEmpty(session.CredentialRoots);
+            Assert.AreEqual(0, session.Left.CommandsReceived);
+        }
+        await using (var session = await FtpWorkerSession.StartAsync())
+        {
+            AssertCode("RemoteConflict", await session.UploadAsync("left", "same.txt", [1], preconditions: new("stale", false)));
+            AssertCode("ReservedPath", await session.UploadAsync("left", ".mp-stage-" + Guid.NewGuid().ToString("N"), [1]));
+            AssertCode("RootMutationForbidden", await session.UploadAsync("left", "", [1]));
+            CollectionAssert.AreEqual(Encoding.UTF8.GetBytes("left"), session.Left.ReadStoredFile("/same.txt"));
+            Assert.IsFalse(Directory.Exists(session.Cache));
+        }
+    }
+
+    [TestMethod]
+    public async Task StableOperationReplayChecksBytesAndBindingAndNeverRepublishesChangedTargets()
+    {
+        await using var session = await FtpWorkerSession.StartAsync();
+        Guid operation = Guid.NewGuid();
+        byte[] content = Encoding.UTF8.GetBytes("created");
+        Assert.AreEqual("UploadComplete", (await session.UploadAsync("left", "new.txt", content, operation)).MessageType);
+        Assert.AreEqual("UploadComplete", (await session.UploadAsync("left", "new.txt", content, operation)).MessageType);
+        Assert.AreEqual(1, session.Left.PublishedUploads);
+        AssertCode("OperationBindingMismatch", await session.UploadAsync("left", "new.txt", Encoding.UTF8.GetBytes("changed"), operation));
+        AssertCode("OperationBindingMismatch", await session.UploadAsync("right", "new.txt", content, operation));
+        AssertCode("OperationBindingMismatch", await session.UploadAsync("left", "different.txt", content, operation));
+        session.Left.ReplaceStoredFile("/new.txt", Encoding.UTF8.GetBytes("external"));
+        AssertCode("RemoteConflict", await session.UploadAsync("left", "new.txt", content, operation));
+        CollectionAssert.AreEqual(Encoding.UTF8.GetBytes("external"), session.Left.ReadStoredFile("/new.txt"));
+        Assert.AreEqual(1, session.Left.PublishedUploads);
+        await AssertCacheClearedAsync(session);
+    }
+
+    [TestMethod]
+    public async Task ContentVerificationDetectsExternalEditsWithUnchangedSizeAndTimestamp()
+    {
+        await using var session = await FtpWorkerSession.StartAsync();
+        string revision = (await session.RequestAsync("Stat", new { rootKey = "left", path = "same.txt" })).Payload.GetProperty("revision").GetString()!;
+        session.Left.AfterStageStored = () => session.Left.ReplaceStoredFile("/same.txt", Encoding.UTF8.GetBytes("edit"), keepTimestamp: true);
+        AssertCode("RemoteConflict", await session.UploadAsync("left", "same.txt", Encoding.UTF8.GetBytes("replacement"), preconditions: new(revision, false)));
+        CollectionAssert.AreEqual(Encoding.UTF8.GetBytes("edit"), session.Left.ReadStoredFile("/same.txt"));
+        Assert.AreEqual(0, session.Left.PublishedUploads);
+        Assert.IsFalse(session.Left.StoredPaths.Any(path => path.StartsWith("/.mp-recovery-", StringComparison.Ordinal)));
+        await AssertCacheClearedAsync(session);
+    }
+
+    [TestMethod]
+    public async Task FailedAndLostPublicationAcknowledgementsRetainOriginalsAndReconcileStableRetries()
+    {
+        foreach (bool loseAcknowledgement in new[] { false, true })
+        {
+            await using var session = await FtpWorkerSession.StartAsync();
+            Guid operation = Guid.NewGuid();
+            string revision = (await session.RequestAsync("Stat", new { rootKey = "left", path = "same.txt" })).Payload.GetProperty("revision").GetString()!;
+            session.Left.FailNextPublish = !loseAcknowledgement;
+            session.Left.LoseNextPublishAcknowledgement = loseAcknowledgement;
+            byte[] content = Encoding.UTF8.GetBytes("new version");
+            AdapterControlFrame ambiguous = await session.UploadAsync("left", "same.txt", content, operation, new(revision, false));
+            Assert.AreEqual("OperationError", ambiguous.MessageType, "loseAck=" + loseAcknowledgement + " Commands: " + string.Join(";", session.Left.MutationCommands));
+            AssertCode("MutationOutcomeAmbiguous", ambiguous);
+            Assert.AreEqual(".mp-recovery-" + operation.ToString("N"), ambiguous.Payload.GetProperty("recoveryRelativePath").GetString());
+            CollectionAssert.AreEqual(Encoding.UTF8.GetBytes("left"), session.Left.ReadStoredFile("/.mp-recovery-" + operation.ToString("N")));
+            Assert.AreEqual("UploadComplete", (await session.UploadAsync("left", "same.txt", content, operation, new(revision, false))).MessageType);
+            CollectionAssert.AreEqual(content, session.Left.ReadStoredFile("/same.txt"));
+            Assert.AreEqual(1, session.Left.PublishedUploads);
+            await AssertCacheClearedAsync(session);
+        }
+    }
+
+    [TestMethod]
+    public async Task CanceledOrInvalidUploadFramesReleaseCachesWithoutMutatingTheSource()
+    {
+        await using var session = await FtpWorkerSession.StartAsync();
+        foreach (bool cancel in new[] { true, false })
+        {
+            Guid request = Guid.NewGuid(), stream = Guid.NewGuid(), operation = Guid.NewGuid();
+            await session.SendAsync("Upload", request, new { rootKey = "left", path = "new.txt", operationId = operation, streamId = stream, length = 2 });
+            Assert.AreEqual("UploadReady", (await session.ReadAsync()).MessageType);
+            await session.SendChunkAsync(request, stream, "left", 0, [1], false);
+            if (cancel)
+            {
+                AssertCode("CancelRootMismatch", await session.RequestAsync("Cancel", new { rootKey = "right", targetRequestId = request, operationId = operation }));
+                Guid cancelRequest = Guid.NewGuid();
+                await session.SendAsync("Cancel", cancelRequest, new { rootKey = "left", targetRequestId = request, operationId = operation });
+                AdapterControlFrame error = await session.ReadAsync();
+                Assert.AreEqual(request, error.RequestId);
+                AssertCode("Canceled", error);
+                AdapterControlFrame ack = await session.ReadAsync();
+                Assert.AreEqual(cancelRequest, ack.RequestId);
+                Assert.AreEqual("CancelAck", ack.MessageType);
+            }
+            else
+            {
+                await session.SendChunkAsync(request, stream, "right", 1, [2], true);
+                Assert.AreEqual("OperationError", (await session.ReadAsync()).MessageType);
+            }
+            Assert.IsNull(session.Left.ReadStoredFile("/new.txt"));
+            Assert.AreEqual(0, session.Left.PublishedUploads);
+            await AssertCacheClearedAsync(session);
+        }
+    }
+
+    private static void AssertCode(string code, AdapterControlFrame response)
+    {
+        Assert.AreEqual("OperationError", response.MessageType);
+        Assert.AreEqual(code, response.Payload.GetProperty("code").GetString());
+    }
+
+    private static async Task AssertCacheClearedAsync(FtpWorkerSession session)
+    {
+        for (int attempt = 0; attempt < 20 && Directory.Exists(session.Cache) && Directory.GetFiles(session.Cache).Length != 0; attempt++)
+            await Task.Delay(50);
+        if (Directory.Exists(session.Cache)) Assert.IsEmpty(Directory.GetFiles(session.Cache));
     }
 }

@@ -15,6 +15,6 @@ foreach (MethodInfo method in type.GetMethods().Where(method => method.GetCustom
     count++;
     Console.WriteLine("Passed: " + method.Name);
 }
-if (count != 8) throw new InvalidDataException("The complete FTP conformance profile must execute without skips.");
+if (count != 15) throw new InvalidDataException("The complete FTP conformance profile must execute without skips.");
 Console.WriteLine("FTP conformance passed with the Worker private runtime: " + count);
 return 0;

@@ -17,12 +17,30 @@ is checked; a configured `trustedCertificateSha256` may explicitly pin the exact
 certificate. An untrusted certificate is refused before password authentication.
 Passwords arrive only through the Host credential exchange and are not logged.
 
-The current v2 development boundary supports directory paging, Stat and bounded
-binary range reads. It refuses destructive or conditional mutations with
-`ConditionalMutationUnavailable`; the safe mutation policy is being completed
-before a formal v2 release. Generic FTP supplies no atomic version condition.
-Metadata revisions detect visible size/time changes but do not prove a snapshot
-against same-size changes with the same timestamp. They are never treated as CAS.
+The current v2 development boundary supports directory paging, Stat, bounded
+binary range reads and optimistic file uploads. Each root accepts `mutationPolicy`
+as `Optimistic` (default) or `ReadOnly`. Read-only roots refuse uploads before
+receiving bytes. Move, delete and directory mutations remain unavailable until
+their recovery paths are implemented and verified.
+
+Uploads use the SDK transfer lease, a verified sibling staging file, metadata and
+full-content checks before publication, and a retained copy of the previous file.
+Stable operation IDs bind the root, path, preconditions, length and content hash.
+Repeated operations reconcile the remote result rather than blindly republish it.
+Unknown results return `MutationOutcomeAmbiguous` with a root-relative recovery
+path; previous data and operation evidence are retained for inspection. The remote
+names `.mp-stage-<operationId>`, `.mp-recovery-<operationId>` and
+`.mp-journal-<operationId>` are reserved and excluded from normal directory pages.
+Recovery copies and receipts are retained after success and consume remote space;
+they must not be removed while a result is unknown. The Worker stores no local
+persistent state; its local transfer lease is removed after completion or failure.
+
+Generic FTP supplies no atomic version condition. Metadata revisions detect visible
+size/time changes but do not prove a snapshot against same-size changes with the
+same timestamp. Full-content checks detect additional changes, but an external
+writer can still race the final check, preservation or rename. Retained copies do
+not guarantee capture of the last concurrent edit. This is optimistic synchronization,
+with no CAS or exactly-once guarantee.
 
 FluentFTP 54.2.1 supplies the mature connection, TLS, passive data transport and
 listing parsers. Raw directory input is limited to 4 MiB, 8,192 lines and 8,192
@@ -38,7 +56,9 @@ Run `pwsh ./eng/verify.ps1` for the fixed SDK check, locked restore, Release bui
 complete formatting and actual Worker process tests against disposable FTP/FTPS
 endpoints. They exercise two authenticated sources, cursor boundaries, plaintext
 consent, stale read rejection, explicit/implicit TLS, invalid certificates and
-oversized or escaping listings. Test fixtures use no user files or live servers.
+oversized or escaping listings, multi-frame and empty uploads, retained originals,
+operation replay, unchanged-metadata edits, ambiguous publication and upload
+cancellation. Test fixtures use no user files or live servers.
 
 Preview candidates are resolved from `develop` as `X.Y.Z-preview.N`. Run the
 release workflow with `publish=false` to verify a disposable candidate. Actual
@@ -51,8 +71,9 @@ Each candidate is built once, signed, frozen with its exact source and hashes,
 and tested on native x64 and ARM64. The controller consumes fixed SDK 0.2.1
 conformance assets and the fixed production Host verifier. The Host profile
 checks separate TLS sources, root credentials, CfSharp reads, disabled roots,
-private runtime loading and safe mutation refusal. Safe write capabilities remain
-an open release requirement. Production signing keys are supplied only in the
+private runtime loading and the existing mutation refusal profile. The production
+Host mutation profile and remaining write capabilities must pass before formal v2
+publication. Production signing keys are supplied only in the
 protected signing job; no private key file is read or exported. Existing releases
 and tags remain immutable.
 
