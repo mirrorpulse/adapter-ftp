@@ -8,8 +8,18 @@ namespace MirrorPulse.Adapter.Ftp.Worker;
 /// <summary>Reuse FluentFTP transport and parsers while bounding raw directory input before parsing.</summary>
 public sealed class BoundedFtpClient : AsyncFtpClient
 {
+    private bool _requiresReconnect;
+
+    public void RequireReconnect() => _requiresReconnect = true;
+
     public async Task<IReadOnlyList<FtpListItem>> ReadBoundedListingAsync(string path, CancellationToken token)
     {
+        if (_requiresReconnect || !IsConnected)
+        {
+            // Reconnect before readback, never reissue the uncertain mutation.
+            await Connect(reConnect: true, token).ConfigureAwait(false);
+            _requiresReconnect = false;
+        }
         bool machine = Capabilities.Contains(FtpCapability.MLST);
         await SetDataTypeAsync(FtpDataType.Binary, token).ConfigureAwait(false);
         FtpDataStream stream = await OpenDataStreamAsync((machine ? "MLSD " : "LIST ") + path, 0, token).ConfigureAwait(false);

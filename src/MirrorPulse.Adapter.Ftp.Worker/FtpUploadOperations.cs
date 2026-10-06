@@ -135,8 +135,10 @@ internal static class FtpUploadOperations
             await WriteReceiptAsync(root, journal, receipt with { Phase = "Committed" }, token).ConfigureAwait(false);
             return await RevisionAsync(root, operation.Path, token).ConfigureAwait(false);
         }
-        catch (Exception exception) when (exception is FtpException or IOException or OperationCanceledException)
+        catch (Exception exception) when (exception is FtpException or IOException or OperationCanceledException or TimeoutException or System.Net.Sockets.SocketException)
         {
+            if (exception is not InvalidDataException and not FtpRecoveryRequiredException)
+                root.Client.RequireReconnect();
             // No automatic rollback or overwrite after a potentially destructive remote command.
             if (receipt.Phase == "Preserved" || await HasBackupAsync(root, backup).ConfigureAwait(false))
                 throw new FtpRecoveryRequiredException(recovery);
@@ -148,7 +150,7 @@ internal static class FtpUploadOperations
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         try { return await FtpOperations.RevisionAsync(root, backup, timeout.Token).ConfigureAwait(false) is not null; }
-        catch (Exception exception) when (exception is IOException or FtpException or OperationCanceledException) { return true; }
+        catch (Exception exception) when (exception is IOException or FtpException or OperationCanceledException or TimeoutException or System.Net.Sockets.SocketException) { return true; }
     }
 
     private static async Task<string> RevisionAsync(FtpWorkerRoot root, string relative, CancellationToken token) =>

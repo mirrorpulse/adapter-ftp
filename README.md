@@ -39,6 +39,14 @@ Recovery copies and receipts are retained after success and consume remote space
 they must not be removed while a result is unknown. The Worker stores no local
 persistent state; its local transfer lease is removed after completion or failure.
 
+A broken transport is reconnected through FluentFTP before result readback;
+an uncertain mutation is never retried just to restore the connection. Remote
+receipts survive Worker restart. Corrupt or oversized receipts block mutation.
+Cancellation releases an upload that is still receiving bytes. Publication runs
+to a terminal result before queued commands are processed, so a cancellation
+acknowledgement does not prove that a remote write was rolled back. Unknown
+results still require readback with the original operation ID.
+
 Generic FTP supplies no atomic version condition. Metadata revisions detect visible
 size/time changes but do not prove a snapshot against same-size changes with the
 same timestamp. Full-content checks detect additional changes, but an external
@@ -63,7 +71,8 @@ consent, stale read rejection, explicit/implicit TLS, invalid certificates and
 oversized or escaping listings, multi-frame and empty uploads, retained originals,
 operation replay, unchanged-metadata edits, ambiguous publication and upload
 cancellation, actual file moves/deletes, nested directory creation, conservative
-empty deletion and cross-root/destination refusal. Test fixtures use no user files or live servers.
+empty deletion and cross-root/destination refusal, real disconnects, Worker restart,
+corrupt evidence and cancellation during publication. Test fixtures use no user files or live servers.
 
 Preview candidates are resolved from `develop` as `X.Y.Z-preview.N`. Run the
 release workflow with `publish=false` to verify a disposable candidate. Actual

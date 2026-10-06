@@ -36,11 +36,11 @@ public static class FtpWorkerProgram
             return 0;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return 0; }
-        catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException or JsonException or UnauthorizedAccessException or FluentFTP.Exceptions.FtpException or System.Security.Authentication.AuthenticationException or System.Net.Sockets.SocketException)
+        catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException or JsonException or UnauthorizedAccessException or FluentFTP.Exceptions.FtpException or System.Security.Authentication.AuthenticationException or System.Net.Sockets.SocketException or TimeoutException)
         {
             // Paths and configuration values must not become ordinary diagnostic output.
             string code = exception is System.Security.Authentication.AuthenticationException ? "CertificateRejected" :
-                exception is UnauthorizedAccessException ? "AccessDenied" : exception is IOException or System.Net.Sockets.SocketException ? "NetworkUnavailable" : "InvalidConfiguration";
+                exception is UnauthorizedAccessException ? "AccessDenied" : exception is IOException or System.Net.Sockets.SocketException or TimeoutException ? "NetworkUnavailable" : "InvalidConfiguration";
             await channel.SendAsync("Error", helloId, false, new { code }, CancellationToken.None).ConfigureAwait(false);
             return 1;
         }

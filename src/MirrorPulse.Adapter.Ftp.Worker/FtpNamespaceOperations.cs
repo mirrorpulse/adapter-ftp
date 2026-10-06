@@ -12,7 +12,7 @@ internal static class FtpNamespaceOperations
         Convert.ToHexString(SHA256.HashData(AdapterProtocolJson.Encode(new { type, operation })));
 
     public static async Task<string?> MutateAsync(string type, FtpWorkerRoot root,
-        AdapterOperationRequest operation, string cache, CancellationToken token)
+        AdapterOperationRequest operation, string cache, Action bindOperation, CancellationToken token)
     {
         FtpUploadOperations.ValidateUserPath(operation.Path);
         if (!root.AllowsMutations) throw new InvalidDataException("ReadOnlyRoot");
@@ -31,7 +31,10 @@ internal static class FtpNamespaceOperations
         if (receipt is not null && receipt.Fingerprint != fingerprint) throw new InvalidDataException("OperationBindingMismatch");
         string? current = await FtpOperations.RevisionAsync(root, operation.Path, token).ConfigureAwait(false);
         if (receipt?.Phase == "Committed")
+        {
+            bindOperation();
             return await ReconcileAsync(type, root, operation, receipt.Digest, token).ConfigureAwait(false);
+        }
         if (receipt is null)
         {
             AdapterMutationPreconditions conditions = operation.Preconditions ?? new();
@@ -50,6 +53,7 @@ internal static class FtpNamespaceOperations
             receipt = new(fingerprint, digest, null, "Prepared");
             await FtpUploadOperations.WriteReceiptAsync(root, journal, receipt, token).ConfigureAwait(false);
         }
+        bindOperation();
         try
         {
             if (operation.IsDirectory)
@@ -117,8 +121,12 @@ internal static class FtpNamespaceOperations
             return revision;
         }
         catch (InvalidDataException) { throw; }
-        catch (Exception exception) when (exception is FtpException or IOException or OperationCanceledException)
-        { throw new FtpRecoveryRequiredException(operation.IsDirectory ? journal : backup); }
+        catch (Exception exception) when (exception is FtpException or IOException or OperationCanceledException or TimeoutException or System.Net.Sockets.SocketException)
+        {
+            if (exception is not FtpRecoveryRequiredException)
+                root.Client.RequireReconnect();
+            throw new FtpRecoveryRequiredException(operation.IsDirectory ? journal : backup);
+        }
     }
 
     private static async Task RequireSourceAsync(FtpWorkerRoot root, AdapterOperationRequest operation, string digest, CancellationToken token)

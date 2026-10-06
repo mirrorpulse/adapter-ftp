@@ -15,6 +15,7 @@ internal sealed class FtpServerFixture : IAsyncDisposable
     private readonly X509Certificate2 _certificate;
     private readonly X509Certificate2 _dataCertificate;
     private readonly Task _server;
+    private readonly CancellationTokenSource _lifetime = new();
     private readonly FtpSecurityMode _mode;
     private readonly Dictionary<string, (byte[] Content, DateTime Modified)> _files =
         new(StringComparer.Ordinal);
@@ -69,6 +70,10 @@ internal sealed class FtpServerFixture : IAsyncDisposable
     public bool FailNextStore { get; set; }
     public bool FailNextPublish { get; set; }
     public bool LoseNextPublishAcknowledgement { get; set; }
+    public bool DropNextPublishAcknowledgement { get; set; }
+    public bool DropNextRenameAcknowledgement { get; set; }
+    public TaskCompletionSource? PublicationReached { get; set; }
+    public TaskCompletionSource? ContinuePublication { get; set; }
     public Action? AfterStageStored { get; set; }
     public int PublishedUploads { get; private set; }
     public List<string> MutationCommands { get; } = [];
@@ -87,6 +92,7 @@ internal sealed class FtpServerFixture : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        await _lifetime.CancelAsync();
         _listener.Stop();
         _dataListener?.Stop();
         try
@@ -99,11 +105,26 @@ internal sealed class FtpServerFixture : IAsyncDisposable
 
         _certificate.Dispose();
         _dataCertificate.Dispose();
+        _lifetime.Dispose();
     }
 
     private async Task ServeAsync()
     {
-        using TcpClient client = await _listener.AcceptTcpClientAsync();
+        while (!_lifetime.IsCancellationRequested)
+        {
+            using TcpClient client = await _listener.AcceptTcpClientAsync(_lifetime.Token);
+            _protectData = false;
+            _restartOffset = 0;
+            _renameFrom = null;
+            _currentDirectory = "/";
+            try { await ServeConnectionAsync(client); }
+            catch (Exception exception) when (exception is IOException or SocketException or AuthenticationException) { }
+            finally { _dataListener?.Stop(); _dataListener = null; }
+        }
+    }
+
+    private async Task ServeConnectionAsync(TcpClient client)
+    {
         Stream stream = client.GetStream();
         if (_mode == FtpSecurityMode.ImplicitTls)
         {
@@ -114,7 +135,7 @@ internal sealed class FtpServerFixture : IAsyncDisposable
         while (true)
         {
             using var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: true);
-            string? line = await reader.ReadLineAsync();
+            string? line = await reader.ReadLineAsync(_lifetime.Token);
             if (line is null)
             {
                 return;
@@ -255,6 +276,13 @@ internal sealed class FtpServerFixture : IAsyncDisposable
                     _files.Remove(_renameFrom);
                     _renameFrom = null;
                     if (publishing) PublishedUploads++;
+                    if (publishing)
+                    {
+                        PublicationReached?.TrySetResult();
+                        if (ContinuePublication is { } gate) await gate.Task.WaitAsync(_lifetime.Token);
+                    }
+                    if (DropNextRenameAcknowledgement) { DropNextRenameAcknowledgement = false; return; }
+                    if (publishing && DropNextPublishAcknowledgement) { DropNextPublishAcknowledgement = false; return; }
                     bool lost = publishing && LoseNextPublishAcknowledgement;
                     if (publishing) LoseNextPublishAcknowledgement = false;
                     await SendAsync(stream, lost ? "451 Publication acknowledgement unavailable\r\n" : "250 Rename complete\r\n");

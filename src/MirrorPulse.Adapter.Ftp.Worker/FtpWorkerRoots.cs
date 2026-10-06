@@ -51,6 +51,11 @@ internal sealed class FtpWorkerRoots : IDisposable
     public FtpWorkerRoot Get(string key) => !_roots.TryGetValue(key, out FtpWorkerRoot? root)
         ? throw new InvalidDataException("UnknownRoot") : root ?? throw new InvalidDataException("RootOffline");
 
+    public void RequireReconnect(string key)
+    {
+        if (_roots.TryGetValue(key, out FtpWorkerRoot? root)) root?.Client.RequireReconnect();
+    }
+
     public void Dispose()
     {
         foreach (FtpWorkerRoot? root in _roots.Values) root?.Client.Dispose();

@@ -16,6 +16,7 @@ internal sealed class FtpWorkerSession : IAsyncDisposable
     private readonly Guid _session = Guid.NewGuid();
     private readonly CancellationTokenSource _deadline = new(TimeSpan.FromSeconds(90));
     private int _protocol = 1;
+    private bool _ownsSources;
     public FtpServerFixture Left { get; private set; } = null!;
     public FtpServerFixture Right { get; private set; } = null!;
 
@@ -61,11 +62,12 @@ internal sealed class FtpWorkerSession : IAsyncDisposable
     public string Cache { get; }
 
     public static async Task<FtpWorkerSession> StartAsync(FtpSecurityMode mode = FtpSecurityMode.Plain, bool rejectCertificate = false, bool allowPlaintext = true,
-        string mutationPolicy = "Optimistic")
+        string mutationPolicy = "Optimistic", FtpServerFixture? left = null, FtpServerFixture? right = null)
     {
+        if ((left is null) != (right is null)) throw new ArgumentException("Both fixture sources are required.");
         string root = Path.Combine(Path.GetTempPath(), "mp-ftp-v2-" + Guid.NewGuid().ToString("N"));
         var session = new FtpWorkerSession(root)
-        { Left = new(mode, "left"), Right = new(mode, "right") };
+        { Left = left ?? new(mode, "left"), Right = right ?? new(mode, "right"), _ownsSources = left is null && right is null };
         try
         {
             await session._pipe.WaitForConnectionAsync(session._deadline.Token);
@@ -99,7 +101,8 @@ internal sealed class FtpWorkerSession : IAsyncDisposable
                 await session.SendAsync("CredentialResponse", frame.RequestId, new { referenceId = key + "-credential", secret = "secret-" + key }, response: true);
             }
             if (!rejectCertificate && allowPlaintext && mutationPolicy is "Optimistic" or "ReadOnly") Assert.AreEqual("Connected", session.StartupFrame.MessageType);
-            if (Environment.GetEnvironmentVariable("MP_FTP_TEST_WORKER_EXE") is { } executable)
+            if (session.StartupFrame.MessageType == "Connected" &&
+                Environment.GetEnvironmentVariable("MP_FTP_TEST_WORKER_EXE") is { } executable)
             {
                 string privateRuntime = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(executable)!, "coreclr.dll"));
                 ProcessModule[] modules = session._process.Modules.Cast<ProcessModule>().ToArray();
@@ -219,8 +222,11 @@ internal sealed class FtpWorkerSession : IAsyncDisposable
     {
         if (!_process.HasExited) { _process.Kill(entireProcessTree: true); await _process.WaitForExitAsync(); }
         _process.Dispose();
-        await Left.DisposeAsync();
-        await Right.DisposeAsync();
+        if (_ownsSources)
+        {
+            await Left.DisposeAsync();
+            await Right.DisposeAsync();
+        }
         await _pipe.DisposeAsync();
         _deadline.Dispose();
         Directory.Delete(Root, recursive: true);

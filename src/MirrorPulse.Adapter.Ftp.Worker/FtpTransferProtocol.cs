@@ -69,7 +69,7 @@ internal sealed class FtpTransferProtocol(AdapterControlChannel channel, Adapter
                     default: throw new InvalidDataException("ConditionalMutationUnavailable");
                 }
             }
-            catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException or JsonException or FormatException or FtpException or KeyNotFoundException or System.Security.Authentication.AuthenticationException)
+            catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException or JsonException or FormatException or FtpException or KeyNotFoundException or System.Security.Authentication.AuthenticationException or TimeoutException or System.Net.Sockets.SocketException)
             {
                 await ErrorAsync(command, exception, token).ConfigureAwait(false);
             }
@@ -85,8 +85,9 @@ internal sealed class FtpTransferProtocol(AdapterControlChannel channel, Adapter
         if (length < 0 || stream == Guid.Empty || _uploads.Count >= 4) throw new InvalidDataException("UploadLimit");
         if (_uploads.Values.Any(upload => upload.Operation.OperationId == operation.OperationId)) throw new InvalidDataException("OperationInProgress");
         string fingerprint = FtpUploadOperations.Fingerprint(operation, length);
-        BindOperation(operation.OperationId, fingerprint);
+        CheckOperationBinding(operation.OperationId, fingerprint);
         await FtpUploadOperations.PrepareAsync(root, operation, length, token).ConfigureAwait(false);
+        BindOperation(operation.OperationId, fingerprint);
         var lease = new AdapterTransferLease(cache);
         try
         {
@@ -99,13 +100,18 @@ internal sealed class FtpTransferProtocol(AdapterControlChannel channel, Adapter
 
     private void BindOperation(Guid operation, string fingerprint)
     {
-        if (_bindings.TryGetValue(operation, out string? previous) && previous != fingerprint)
-            throw new InvalidDataException("OperationBindingMismatch");
+        CheckOperationBinding(operation, fingerprint);
         if (_bindings.TryAdd(operation, fingerprint))
         {
             _bindingOrder.Enqueue(operation);
             if (_bindingOrder.Count > 256) _bindings.Remove(_bindingOrder.Dequeue());
         }
+    }
+
+    private void CheckOperationBinding(Guid operation, string fingerprint)
+    {
+        if (_bindings.TryGetValue(operation, out string? previous) && previous != fingerprint)
+            throw new InvalidDataException("OperationBindingMismatch");
     }
 
     private async Task MutateAsync(AdapterControlFrame command, FtpWorkerRoot root, CancellationToken token)
@@ -119,8 +125,10 @@ internal sealed class FtpTransferProtocol(AdapterControlChannel channel, Adapter
         else operation = AdapterProtocolJson.Decode<AdapterOperationRequest>(Encoding.UTF8.GetBytes(command.Payload.GetRawText()));
         AdapterProtocolJson.ValidateMutation(operation, requiresDestination: command.MessageType == "Move");
         if (_uploads.Values.Any(upload => upload.Operation.OperationId == operation.OperationId)) throw new InvalidDataException("OperationInProgress");
-        BindOperation(operation.OperationId, FtpNamespaceOperations.Fingerprint(command.MessageType, operation));
-        string? revision = await FtpNamespaceOperations.MutateAsync(command.MessageType, root, operation, cache, token).ConfigureAwait(false);
+        string fingerprint = FtpNamespaceOperations.Fingerprint(command.MessageType, operation);
+        CheckOperationBinding(operation.OperationId, fingerprint);
+        string? revision = await FtpNamespaceOperations.MutateAsync(command.MessageType, root, operation, cache,
+            () => BindOperation(operation.OperationId, fingerprint), token).ConfigureAwait(false);
         await ReplyAsync(command, "MutationComplete", new { rootKey = operation.RootKey, operationId = operation.OperationId, revision }, token).ConfigureAwait(false);
     }
 
@@ -145,7 +153,7 @@ internal sealed class FtpTransferProtocol(AdapterControlChannel channel, Adapter
                 contentSha256 = digest
             }, token).ConfigureAwait(false);
         }
-        catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException or JsonException or FormatException or FtpException or KeyNotFoundException or System.Security.Authentication.AuthenticationException)
+        catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException or JsonException or FormatException or FtpException or KeyNotFoundException or System.Security.Authentication.AuthenticationException or TimeoutException or System.Net.Sockets.SocketException)
         { terminal = true; await ErrorAsync(upload.Command, exception, token).ConfigureAwait(false); }
         finally
         {
@@ -186,8 +194,11 @@ internal sealed class FtpTransferProtocol(AdapterControlChannel channel, Adapter
         string code = exception is FtpRecoveryRequiredException ? "MutationOutcomeAmbiguous" :
             exception is System.Security.Authentication.AuthenticationException ? "CertificateRejected" :
             exception is InvalidDataException && codes.Contains(exception.Message, StringComparer.Ordinal) ? exception.Message :
-            exception is FtpException or IOException ? "RetryableTransferFailure" : "InvalidRequest";
+            exception is FtpException or IOException or TimeoutException or System.Net.Sockets.SocketException ? "RetryableTransferFailure" : "InvalidRequest";
         string? root = command.Payload.TryGetProperty("rootKey", out JsonElement rootValue) && rootValue.ValueKind == JsonValueKind.String ? rootValue.GetString() : null;
+        if (root is not null && exception is not InvalidDataException and not FtpRecoveryRequiredException &&
+            exception is FtpException or IOException or TimeoutException or System.Net.Sockets.SocketException)
+            roots.RequireReconnect(root);
         Guid? operation = command.Payload.TryGetProperty("operationId", out JsonElement operationValue) && operationValue.ValueKind == JsonValueKind.String && operationValue.TryGetGuid(out Guid id) ? id : null;
         return ReplyAsync(command, "OperationError", new
         {
