@@ -1,38 +1,112 @@
 # MirrorPulse FTP and FTPS Adapter
 
-This repository contains the independent FTP and FTPS Worker process for MirrorPulse. Each configured instance runs in its own process and communicates with the Host through a current-user Named Pipe.
+This is the official repository for the MirrorPulse FTP and FTPS Worker.
+Previously released v1 packages remain immutable and available. The development
+Worker consumes the fixed published SDK 0.2.1 and negotiates protocol v2 over a
+current-user Named Pipe. Each enabled root has its own endpoint, credentials,
+connection, addresses and cursor scope. Disabled roots request no credentials and
+open no connection. The Host owns configuration and credential storage.
 
-## Build
+## Configuration and capabilities
 
-Run `pwsh ./eng/verify.ps1` to restore and build the Worker for Windows x64 and ARM64. The reusable IPC SDK is under `src/MirrorPulse.Adapter.Sdk/`.
+Each root supplies `endpoint` (an `ftp://` URI without credentials), `username`,
+`credentialReference` and `securityMode`. `ExplicitTls` is the default;
+`ImplicitTls` is also supported. `Plain` requires explicit `allowPlaintext=true`.
+Both TLS modes encrypt the control and data connections. System certificate trust
+is checked; a configured `trustedCertificateSha256` may explicitly pin the exact
+certificate. An untrusted certificate is refused before password authentication.
+Passwords arrive only through the Host credential exchange and are not logged.
 
-## Release status
+The current v2 development boundary supports directory paging, Stat, bounded
+binary range reads, optimistic file uploads, same-root file moves, retained file
+deletion, directory creation and empty-directory deletion. Each root accepts `mutationPolicy`
+as `Optimistic` (default) or `ReadOnly`. Read-only roots refuse uploads before
+receiving bytes or issuing mutation commands. Cross-root moves, directory-tree
+moves and replacement of an existing move destination are refused explicitly.
+File moves retain a verified previous copy; file deletion preserves the source
+under its recovery name. Empty-directory deletion uses one nonrecursive `RMD`.
+Directories containing user data or reserved recovery evidence cannot be deleted.
 
-The Worker implementation is under product integration. No signed production `.mpadapter` release has been published from this repository. Release packages will include both architectures, a verified file inventory, and a detached package signature.
+Uploads use the SDK transfer lease, a verified sibling staging file, metadata and
+full-content checks before publication, and a retained copy of the previous file.
+Stable operation IDs bind the root, path, preconditions, length and content hash.
+Repeated operations reconcile the remote result rather than blindly republish it.
+Unknown results return `MutationOutcomeAmbiguous` with a root-relative recovery
+path; previous data and operation evidence are retained for inspection. The remote
+names `.mp-stage-<operationId>`, `.mp-recovery-<operationId>` and
+`.mp-journal-<operationId>` are reserved and excluded from normal directory pages.
+Recovery copies and receipts are retained after success and consume remote space;
+they must not be removed while a result is unknown. The Worker stores no local
+persistent state; its local transfer lease is removed after completion or failure.
+
+A broken transport is reconnected through FluentFTP before result readback;
+an uncertain mutation is never retried just to restore the connection. Remote
+receipts survive Worker restart. Corrupt or oversized receipts block mutation.
+Cancellation releases an upload that is still receiving bytes. Publication runs
+to a terminal result before queued commands are processed, so a cancellation
+acknowledgement does not prove that a remote write was rolled back. Unknown
+results still require readback with the original operation ID.
+
+Generic FTP supplies no atomic version condition. Metadata revisions detect visible
+size/time changes but do not prove a snapshot against same-size changes with the
+same timestamp. Full-content checks detect additional changes, but an external
+writer can still race the final check, preservation or rename. Retained copies do
+not guarantee capture of the last concurrent edit. This is optimistic synchronization,
+with no CAS or exactly-once guarantee.
+
+FluentFTP 54.2.1 supplies the mature connection, TLS, passive data transport and
+listing parsers. Raw directory input is limited to 4 MiB, 8,192 lines and 8,192
+characters per line before parsing. Unparseable entries, symbolic links and
+escaping paths are refused. Pagination is bound to root and path; it does not
+bypass the listing budget. Each content frame contains at most 1 MiB. Absolute
+paths, traversal, backslashes and control characters are rejected before any FTP
+command. Source settings are never stored by the Worker.
+
+## Verification and publication
+
+Run `pwsh ./eng/verify.ps1` for the fixed SDK check, locked restore, Release builds,
+complete formatting and actual Worker process tests against disposable FTP/FTPS
+endpoints. They exercise two authenticated sources, cursor boundaries, plaintext
+consent, stale read rejection, explicit/implicit TLS, invalid certificates and
+oversized or escaping listings, multi-frame and empty uploads, retained originals,
+operation replay, unchanged-metadata edits, ambiguous publication and upload
+cancellation, actual file moves/deletes, nested directory creation, conservative
+empty deletion and cross-root/destination refusal, real disconnects, Worker restart,
+corrupt evidence and cancellation during publication. Test fixtures use no user files or live servers.
+
+Preview candidates are resolved from `develop` as `X.Y.Z-preview.N`. Run the
+release workflow with `publish=false` to verify a disposable candidate. Actual
+preview publication requires `publish=true` and the exact `PUBLISH` confirmation.
+Stable publication starts from a reviewed `develop` PR merged into `main`, with
+one `breaking`, `feature` or `fix` classification, and requires the protected
+`stable` environment approval.
+
+Each candidate is built once, signed, frozen with its exact source and hashes,
+and tested on native x64 and ARM64. The controller consumes fixed SDK 0.2.1
+conformance assets and the fixed production Host verifier. The Host profile
+checks separate TLS sources, root credentials, CfSharp reads, disabled roots,
+private runtime loading, optimistic uploads and stable retries, retained content,
+file moves/deletes, directory creation/empty deletion and read-only root refusal.
+Both native profiles must pass against the exact signed candidate before formal
+v2 publication. Production signing keys are supplied only in the
+protected signing job; no private key file is read or exported. Existing releases
+and tags remain immutable.
 
 Licensed under Apache-2.0. See [LICENSE](LICENSE).
 
-## Release governance
+## Package execution
 
-The release scripts and pinned staged workflow follow the template at commit
-544c594. Version/tag inputs enter scripts through environment data and are
-validated before paths or builds are created. Build has no signing secrets;
-signing uses the `adapter-signing` environment; publishing alone has write
-permission and uses `adapter-release`. Manual dispatch defaults to a verified
-signed artifact without publishing a tag or Release.
+The development package includes a private .NET runtime for `win-x64` and
+`win-arm64`, including `createdump.exe`, runtime notices and the exact locked
+third-party dependency licenses. Signing and verification use the shared ordinal
+canonical inventory. Conformance launches the signed payload with shared runtime
+lookup disabled and checks the actual loaded `coreclr.dll` path.
 
-Run `pwsh ./eng/verify-release.ps1` for hostile input rejection and a dual-RID
-package signed with a disposable in-memory key. Production keys are read only
-from signing-step environment variables. No private key file is read or exported.
-The embedded inventory is verified before upload; MirrorPulse independently
-verifies publisher trust at installation.
+CI runs the source and signed package profiles on native x64 and ARM64 runners.
+Original TRX and package hash receipts are retained as artifacts. Organization
+signing, production Host acceptance and protected publication remain separate
+release gates.
 
-The repository owner must configure environment reviewers, trusted branch/tag
-rules and signing-secret scope. YAML environment names alone do not enforce those
-protections. Existing organization secrets remain compatible until that migration.
-The current framework-dependent v1 runtime is retained by this release change.
-
-The release workflow also verifies the newly signed candidate using MirrorPulse
-16c6742 and real Local/WebDAV/SMB/FTP/SFTP Host/Worker fixtures on a disposable
-runner. It records both source commits and the candidate package hash. Publishing
-requires that protocol gate; signed dry-run assets remain unpublished.
+System TLS validates the certificate on each control and data connection through
+FluentFTP's public custom stream interface. A data connection using an untrusted
+certificate is refused before projecting directory entries or content.

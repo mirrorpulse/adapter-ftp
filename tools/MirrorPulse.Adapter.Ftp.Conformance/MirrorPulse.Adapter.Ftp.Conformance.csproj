@@ -2,12 +2,10 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
     <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <IsTestProject>false</IsTestProject>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="FluentFTP" />
-    <PackageReference Include="MirrorPulse.Adapter.Sdk" />
+    <ProjectReference Include="../../tests/MirrorPulse.Adapter.Ftp.Worker.Tests/MirrorPulse.Adapter.Ftp.Worker.Tests.csproj" />
   </ItemGroup>
 </Project>

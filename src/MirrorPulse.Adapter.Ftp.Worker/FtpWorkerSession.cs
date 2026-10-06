@@ -1,9 +1,7 @@
 using System.Net;
 using System.Net.Security;
 using System.Security.Cryptography;
-using System.Text.Json;
 using FluentFTP;
-using MirrorPulse.Adapter.Sdk;
 
 namespace MirrorPulse.Adapter.Ftp.Worker;
 
@@ -30,7 +28,8 @@ public sealed record FtpWorkerConfiguration(
             throw new InvalidDataException("The FTP endpoint must be an absolute ftp:// URI without credentials.");
         }
 
-        if (string.IsNullOrWhiteSpace(Username) || string.IsNullOrWhiteSpace(CredentialReference) ||
+        if (string.IsNullOrWhiteSpace(Username) || Username.Any(char.IsControl) ||
+            string.IsNullOrWhiteSpace(CredentialReference) ||
             !Enum.IsDefined(SecurityMode))
         {
             throw new InvalidDataException("The FTP configuration is incomplete.");
@@ -47,7 +46,7 @@ public sealed record FtpWorkerConfiguration(
 
 public static class FtpWorkerConnection
 {
-    public static async Task<AsyncFtpClient> ConnectAsync(
+    public static async Task<BoundedFtpClient> ConnectAsync(
         FtpWorkerConfiguration configuration,
         string password,
         CancellationToken cancellationToken)
@@ -56,7 +55,7 @@ public static class FtpWorkerConnection
         ArgumentNullException.ThrowIfNull(password);
         configuration.Validate();
         cancellationToken.ThrowIfCancellationRequested();
-        var client = new AsyncFtpClient
+        var client = new BoundedFtpClient
         {
             Host = configuration.Endpoint.Host,
             Port = configuration.Endpoint.IsDefaultPort
@@ -71,7 +70,17 @@ public static class FtpWorkerConnection
             FtpSecurityMode.ImplicitTls => FtpEncryptionMode.Implicit,
             _ => throw new InvalidDataException("Unknown FTP security mode."),
         };
+        client.Config.RetryAttempts = 0;
+        client.Config.ConnectTimeout = 15000;
+        client.Config.ReadTimeout = 15000;
+        client.Config.DataConnectionConnectTimeout = 15000;
+        client.Config.DataConnectionReadTimeout = 15000;
         client.Config.DataConnectionEncryption = configuration.SecurityMode != FtpSecurityMode.Plain;
+        if (configuration.SecurityMode != FtpSecurityMode.Plain)
+        {
+            client.Config.CustomStream = typeof(FtpTlsTransport);
+            client.Config.CustomStreamConfig = new FtpTlsPolicy(configuration.TrustedCertificateSha256);
+        }
         client.ValidateCertificate += (_, args) =>
         {
             args.Accept = args.PolicyErrors == SslPolicyErrors.None ||
@@ -99,102 +108,3 @@ public static class FtpWorkerConnection
         }
     }
 }
-
-public static class FtpWorkerProgram
-{
-    private static readonly JsonSerializerOptions ConfigurationJsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() },
-    };
-
-    public static async Task<int> RunAsync(IReadOnlyList<string> args, CancellationToken cancellationToken = default)
-    {
-        AdapterWorkerProcessArguments arguments;
-        try
-        {
-            arguments = AdapterWorkerProcessArguments.Parse(args);
-        }
-        catch (ArgumentException)
-        {
-            return 2;
-        }
-
-        await using AdapterNamedPipeClient pipe = await AdapterNamedPipeClient.ConnectAsync(
-            arguments.PipeName, TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
-        var channel = new AdapterControlChannel(pipe, arguments.InstanceId, arguments.WorkerSessionId);
-        Guid helloId = Guid.NewGuid();
-        await channel.SendAsync("Hello", helloId, false,
-            new { adapterId = "mirrorpulse.ftp", minimumProtocolVersion = 1, maximumProtocolVersion = 1 },
-            cancellationToken).ConfigureAwait(false);
-
-        try
-        {
-            AdapterControlFrame ready = await channel.ReadAsync(cancellationToken).ConfigureAwait(false);
-            if (ready.MessageType != "Ready" || !ready.IsResponse || ready.RequestId != helloId)
-            {
-                throw new InvalidDataException("The Host did not accept the FTP Worker handshake.");
-            }
-
-            FtpWorkerConfiguration configuration = ready.Payload.Deserialize<FtpWorkerConfiguration>(
-                    ConfigurationJsonOptions)
-                ?? throw new InvalidDataException("The Host did not provide FTP configuration.");
-            configuration.Validate();
-
-            Guid credentialId = Guid.NewGuid();
-            await channel.SendAsync("CredentialRequest", credentialId, false,
-                new { referenceId = configuration.CredentialReference }, cancellationToken).ConfigureAwait(false);
-            AdapterControlFrame credential = await channel.ReadAsync(cancellationToken).ConfigureAwait(false);
-            if (credential.MessageType != "CredentialResponse" || !credential.IsResponse ||
-                credential.RequestId != credentialId ||
-                credential.Payload.GetProperty("referenceId").GetString() != configuration.CredentialReference)
-            {
-                throw new InvalidDataException("The Host did not provide the requested FTP credential.");
-            }
-
-            string secret = credential.Payload.GetProperty("secret").GetString()
-                ?? throw new InvalidDataException("The FTP credential is empty.");
-            using AsyncFtpClient client = await FtpWorkerConnection.ConnectAsync(
-                configuration, secret, cancellationToken).ConfigureAwait(false);
-            await channel.SendAsync("Connected", helloId, false,
-                new { encrypted = client.IsEncrypted }, cancellationToken).ConfigureAwait(false);
-            var transfer = new FtpWorkerTransferProtocol(channel, client, configuration,
-                arguments.InstanceId, arguments.WorkerSessionId);
-            while (true)
-            {
-                AdapterControlFrame command = await channel.ReadAsync(cancellationToken).ConfigureAwait(false);
-                if (command.IsResponse)
-                {
-                    throw new InvalidDataException("The Host sent an unexpected FTP response.");
-                }
-
-                if (command.MessageType == "Stop")
-                {
-                    await channel.SendAsync("Stopped", command.RequestId, true, new { }, cancellationToken)
-                        .ConfigureAwait(false);
-                    return 0;
-                }
-
-                await transfer.HandleAsync(command, cancellationToken).ConfigureAwait(false);
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            return 0;
-        }
-        catch (Exception exception)
-        {
-            string code = exception switch
-            {
-                InvalidDataException or JsonException => "InvalidConfiguration",
-                System.Security.Authentication.AuthenticationException => "CertificateRejected",
-                System.Net.Sockets.SocketException or IOException or TimeoutException => "NetworkUnavailable",
-                _ => "ConnectionFailed",
-            };
-            await channel.SendAsync("Error", helloId, false, new { code }, CancellationToken.None)
-                .ConfigureAwait(false);
-            return 1;
-        }
-    }
-}
-
-public sealed class FtpWorkerEntryMarker;

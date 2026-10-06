@@ -1,0 +1,16 @@
+[
+  {
+    "files": [
+      "LICENSE"
+    ],
+    "packageId": "MirrorPulse.Adapter.Sdk",
+    "version": "0.2.1"
+  },
+  {
+    "files": [
+      "LICENSE.TXT"
+    ],
+    "packageId": "FluentFTP",
+    "version": "54.2.1"
+  }
+]
