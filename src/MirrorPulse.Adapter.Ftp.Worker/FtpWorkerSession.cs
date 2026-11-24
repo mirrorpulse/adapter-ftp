@@ -5,13 +5,6 @@ using FluentFTP;
 
 namespace MirrorPulse.Adapter.Ftp.Worker;
 
-public enum FtpSecurityMode
-{
-    Plain,
-    ExplicitTls,
-    ImplicitTls,
-}
-
 public sealed record FtpWorkerConfiguration(
     Uri Endpoint,
     string Username,

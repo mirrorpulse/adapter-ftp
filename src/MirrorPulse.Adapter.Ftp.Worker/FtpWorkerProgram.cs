@@ -31,7 +31,7 @@ public static class FtpWorkerProgram
                 ?? throw new InvalidDataException("TransferCacheRequired");
             using var roots = await FtpWorkerRoots.CreateAsync(ready, channel, cancellationToken).ConfigureAwait(false);
             await using var protocol = new FtpTransferProtocol(channel, arguments, roots, cache);
-            await channel.SendAsync("Connected", helloId, false, new { }, cancellationToken).ConfigureAwait(false);
+            await channel.SendAsync("Connected", Guid.NewGuid(), false, new { }, cancellationToken).ConfigureAwait(false);
             await protocol.RunAsync(cancellationToken).ConfigureAwait(false);
             return 0;
         }

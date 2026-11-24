@@ -1,0 +1,18 @@
+{
+  "adapter.title": "FTP / FTPS",
+  "adapter.description": "Sync files from an FTP or FTPS server.",
+  "adapter.setup": "FTP / FTPS connection",
+  "adapter.instructions": "Enter the FTP folder URL and choose the server’s security mode. Use explicit or implicit TLS when available.",
+  "field.endpoint": "FTP folder URL",
+  "field.username": "Username",
+  "field.password": "Password",
+  "field.securityMode": "Transport security",
+  "security.explicit": "Explicit TLS (recommended)",
+  "security.implicit": "Implicit TLS",
+  "security.plain": "Unencrypted FTP",
+  "field.allowPlaintext": "Allow sending credentials and files without encryption",
+  "field.trustedCertificateSha256": "TLS certificate SHA-256 fingerprint (optional, 64 hex digits)",
+  "field.mutationPolicy": "Storage access",
+  "mutation.optimistic": "Read and write (optimistic)",
+  "mutation.readOnly": "Read only"
+}

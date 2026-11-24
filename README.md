@@ -1,20 +1,23 @@
 # MirrorPulse FTP and FTPS Adapter
 
-This is the official repository for the MirrorPulse FTP and FTPS Worker.
-Previously released v1 packages remain immutable and available. The development
-Worker consumes the fixed published SDK 0.2.1 and negotiates protocol v2 over a
-current-user Named Pipe. Each enabled root has its own endpoint, credentials,
-connection, addresses and cursor scope. Disabled roots request no credentials and
-open no connection. The Host owns configuration and credential storage.
+This optional Adapter connects MirrorPulse to FTP and FTPS servers. Install
+the signed `.mpadapter` from this repository's releases in Adapter management
+or with `MirrorPulse adapter install PATH`. The Worker uses the published
+Adapter SDK 1.0.0 and negotiates protocol v2 over a current-user Named Pipe.
+A deployment declares one root. Install the package once and create a
+separate deployment for each server or folder.
 
 ## Configuration and capabilities
 
-Each root supplies `endpoint` (an `ftp://` URI without credentials), `username`,
-`credentialReference` and `securityMode`. `ExplicitTls` is the default;
-`ImplicitTls` is also supported. `Plain` requires explicit `allowPlaintext=true`.
-Both TLS modes encrypt the control and data connections. System certificate trust
-is checked; a configured `trustedCertificateSha256` may explicitly pin the exact
-certificate. An untrusted certificate is refused before password authentication.
+Enter an `ftp://` folder URL without credentials, the username, and a
+password in the signed deployment form. The Host saves the password and
+provides an opaque reference to the Worker. Choose explicit TLS (the default)
+or implicit TLS according to the server. Unencrypted FTP requires an explicit
+opt-in in the form.
+Both TLS modes encrypt the control and data connections. The system trust
+store validates the certificate. The optional `trustedCertificateSha256`
+also permits the exact matching certificate, for example on a private server.
+A certificate that meets neither condition is refused before password authentication.
 Passwords arrive only through the Host credential exchange and are not logged.
 
 The current v2 development boundary supports directory paging, Stat, bounded
@@ -82,11 +85,12 @@ one `breaking`, `feature` or `fix` classification, and requires the protected
 `stable` environment approval.
 
 Each candidate is built once, signed, frozen with its exact source and hashes,
-and tested on native x64 and ARM64. The controller consumes fixed SDK 0.2.1
-conformance assets and the fixed production Host verifier. The Host profile
-checks separate TLS sources, root credentials, CfSharp reads, disabled roots,
-private runtime loading, optimistic uploads and stable retries, retained content,
-file moves/deletes, directory creation/empty deletion and read-only root refusal.
+and tested on native x64 and ARM64. The controller consumes the fixed SDK 1.0.0
+conformance assets and pins the product Host source. The exact signed Worker
+runs the provider's network suite on both architectures. The product gate
+installs the single-root package, validates the signed form, saves credentials
+through the Host, and verifies an encrypted listing, a revision-bound range read
+and stable upload recovery after the Worker restarts.
 Both native profiles must pass against the exact signed candidate before formal
 v2 publication. Production signing keys are supplied only in the
 protected signing job; no private key file is read or exported. Existing releases

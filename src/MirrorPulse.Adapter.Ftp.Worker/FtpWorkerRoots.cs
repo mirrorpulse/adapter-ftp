@@ -11,7 +11,8 @@ internal sealed class FtpWorkerRoots : IDisposable
 
     public static async Task<FtpWorkerRoots> CreateAsync(AdapterReady ready, AdapterControlChannel channel, CancellationToken token)
     {
-        if (ready.Roots.Count is < 1 or > 64) throw new InvalidDataException("InvalidRoots");
+        if (ready.Roots.Count is < 1 or > 64 || (ready.CredentialBindings is not null && ready.Roots.Count != 1))
+            throw new InvalidDataException("InvalidRoots");
         var roots = new FtpWorkerRoots();
         try
         {
@@ -25,10 +26,15 @@ internal sealed class FtpWorkerRoots : IDisposable
                     throw new InvalidDataException("InvalidSecurityMode");
                 if (mode == FtpSecurityMode.Plain && binding.Configuration.GetValueOrDefault("allowPlaintext") != "true")
                     throw new InvalidDataException("PlaintextNotAllowed");
+                string? credentialReference = ready.CredentialBindings is null
+                    ? binding.Configuration.GetValueOrDefault("credentialReference")
+                    : ready.CredentialBindings.GetValueOrDefault("password");
+                if (string.IsNullOrWhiteSpace(credentialReference)) throw new InvalidDataException("CredentialRequired");
+                string? certificatePin = binding.Configuration.GetValueOrDefault("trustedCertificateSha256");
                 var configuration = new FtpWorkerConfiguration(new Uri(endpoint),
                     binding.Configuration.GetValueOrDefault("username") ?? throw new InvalidDataException("UsernameRequired"),
-                    binding.Configuration.GetValueOrDefault("credentialReference") ?? throw new InvalidDataException("CredentialRequired"),
-                    mode, binding.Configuration.GetValueOrDefault("trustedCertificateSha256"));
+                    credentialReference,
+                    mode, string.IsNullOrWhiteSpace(certificatePin) ? null : certificatePin.Trim());
                 configuration.Validate();
                 _ = FtpPathPolicy.Resolve(configuration.Endpoint, "");
                 Guid request = Guid.NewGuid();
