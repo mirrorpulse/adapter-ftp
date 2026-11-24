@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<form version="1">
+    <heading textKey="adapter.setup" />
+    <paragraph textKey="adapter.instructions" />
+    <text key="endpoint" labelKey="field.endpoint" required="true" />
+    <text key="username" labelKey="field.username" required="true" />
+    <password key="password" labelKey="field.password" required="true" />
+    <singleChoice key="securityMode" labelKey="field.securityMode" required="true" default="ExplicitTls">
+        <option id="ExplicitTls" labelKey="security.explicit" />
+        <option id="ImplicitTls" labelKey="security.implicit" />
+        <option id="Plain" labelKey="security.plain" />
+    </singleChoice>
+    <checkBox key="allowPlaintext" labelKey="field.allowPlaintext" required="false" default="false" />
+    <text key="trustedCertificateSha256" labelKey="field.trustedCertificateSha256" required="false" />
+    <singleChoice key="mutationPolicy" labelKey="field.mutationPolicy" required="true" default="Optimistic">
+        <option id="Optimistic" labelKey="mutation.optimistic" />
+        <option id="ReadOnly" labelKey="mutation.readOnly" />
+    </singleChoice>
+</form>
